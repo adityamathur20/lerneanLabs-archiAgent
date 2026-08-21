@@ -6,7 +6,7 @@ from archiagent.ingest.pdf_vector import NoLayersError, load_pdf
 def test_loads_layers_from_real_drawing(demolition_pdf):
     ps = load_pdf(demolition_pdf)
     names = {n.lower() for n in ps.layer_names()}
-    assert "wall" in names
+    assert "walll" in names   # 3 L's: typo in the source CAD file, 187 line paths
     assert "furniture" in names
     assert len(ps.primitives) > 1000
 
