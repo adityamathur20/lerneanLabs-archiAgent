@@ -57,17 +57,23 @@ def _pair_family(family: list[tuple[float, float, float, str]],
             b_lo, b_hi, b_off, _ = family[j]
             thickness = abs(b_off - a_off)
             if thickness > max_t_ft:
-                break  # sorted by offset, so no later j can be closer
+                break  # sorted by offset, so no later j can be farther
             if thickness < min_t_ft:
                 continue
             overlap = min(a_hi, b_hi) - max(a_lo, b_lo)
             if overlap < min_len_ft:
                 continue
-            if best is None or overlap > best[0]:
-                best = (overlap, j, thickness,
+            if overlap < thickness:
+                # A wall is never thicker than it is long. Two short stubs
+                # a couple of feet apart are unrelated geometry, not a wall.
+                continue
+            # nearest offset wins; overlap only breaks ties
+            key = (thickness, -overlap)
+            if best is None or key < best[0]:
+                best = (key, j, thickness,
                         max(a_lo, b_lo), min(a_hi, b_hi), (a_off + b_off) / 2.0)
         if best is not None:
-            _, j, thickness, lo, hi, center = best
+            key, j, thickness, lo, hi, center = best
             used.add(i)
             used.add(j)
             out.append((lo, hi, center, thickness, a_layer))
@@ -78,6 +84,9 @@ def detect_walls_paired_lines(ps: PrimitiveSet, wall_layers: set[str],
                               units_per_foot: float,
                               min_t_in: float = 2.0, max_t_in: float = 24.0,
                               min_len_ft: float = 1.0) -> tuple[WallSeg, ...]:
+    if units_per_foot <= 0:
+        raise ValueError("units_per_foot must be positive")
+
     horizontal: list[tuple[float, float, float, str]] = []
     vertical: list[tuple[float, float, float, str]] = []
 

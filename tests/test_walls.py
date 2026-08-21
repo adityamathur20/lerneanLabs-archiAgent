@@ -52,3 +52,24 @@ def test_wall_spans_only_the_overlapping_extent():
     assert len(walls) == 1
     assert walls[0].start[0] == pytest.approx(2.0)   # 24pt = 2ft
     assert walls[0].end[0] == pytest.approx(10.0)    # 120pt = 10ft
+
+
+def test_nearest_partner_wins_over_a_longer_but_farther_one():
+    """Three parallel lines: the true 4in partner has a short overlap, while a
+    line 18in away has a long one. Selecting by overlap alone would emit an 18in
+    phantom and orphan the real partner."""
+    ps = _ps([((0.0, 0.0), (120.0, 0.0)),      # A
+              ((0.0, 4.0), (30.0, 4.0)),       # B: true partner, 4in, short overlap
+              ((0.0, 18.0), (120.0, 18.0))])   # C: 18in away, long overlap
+    walls = detect_walls_paired_lines(ps, {"WALLS"}, units_per_foot=12.0)
+    assert len(walls) == 1
+    assert walls[0].thickness_ft == pytest.approx(4 / 12, abs=1e-6)
+
+
+def test_rejects_a_pair_wider_than_it_is_long():
+    """Regression: on the real drawing two unrelated stubs 20in apart with ~1.2ft
+    of overlap were emitted as a 'wall' thicker than it was long, which also
+    orphaned a stub that had a genuine 4in partner."""
+    ps = _ps([((0.0, 0.0), (14.4, 0.0)),       # 1.2 ft long
+              ((0.0, 20.0), (14.4, 20.0))])    # 20in away
+    assert detect_walls_paired_lines(ps, {"WALLS"}, units_per_foot=12.0) == ()
