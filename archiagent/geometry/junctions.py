@@ -10,7 +10,7 @@ Tolerances are in INCHES, never pixels, and are always reported.
 from __future__ import annotations
 
 import math
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 
 from archiagent.geometry.walls import WallSeg
 from archiagent.primitives import Pt
@@ -145,3 +145,128 @@ def extend_to_intersections(walls: list[WallSeg] | tuple[WallSeg, ...],
 
     return tuple(replace(w, start=starts[k], end=ends[k])
                  for k, w in enumerate(walls))
+
+
+@dataclass(frozen=True)
+class Junction:
+    point: Pt
+    wall_indices: tuple[int, ...]
+    kind: str  # "L" | "T" | "X" | "collinear" | "end"
+
+
+@dataclass(frozen=True)
+class WallGraph:
+    walls: tuple[WallSeg, ...]
+    junctions: tuple[Junction, ...]
+    unresolved: tuple[Pt, ...] = field(default=())
+
+
+def split_through_walls(walls: list[WallSeg] | tuple[WallSeg, ...],
+                        nodes: list[Pt] | tuple[Pt, ...],
+                        tol_in: float = 1.0) -> tuple[WallSeg, ...]:
+    """Split any wall whose INTERIOR contains a node, so T and X junctions
+    become real graph nodes rather than geometric coincidences."""
+    tol_ft = tol_in / 12.0
+    out: list[WallSeg] = []
+
+    for w in walls:
+        interior: list[tuple[float, Pt]] = []
+        for n in nodes:
+            if math.dist(n, w.start) <= tol_ft or math.dist(n, w.end) <= tol_ft:
+                continue
+            t = _param_on(n, w.start, w.end)
+            if not (0.0 < t < 1.0):
+                continue
+            # must lie ON the wall, not merely on its infinite line
+            proj = (w.start[0] + t * (w.end[0] - w.start[0]),
+                    w.start[1] + t * (w.end[1] - w.start[1]))
+            if math.dist(proj, n) > tol_ft:
+                continue
+            interior.append((t, n))
+
+        if not interior:
+            out.append(w)
+            continue
+
+        interior.sort()
+        cursor = w.start
+        for _, n in interior:
+            out.append(replace(w, start=cursor, end=n))
+            cursor = n
+        out.append(replace(w, start=cursor, end=w.end))
+
+    return tuple(out)
+
+
+def _direction(a: Pt, b: Pt) -> Pt:
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    mag = math.hypot(dx, dy)
+    if mag < 1e-12:
+        return (0.0, 0.0)
+    return (dx / mag, dy / mag)
+
+
+def _classify(point: Pt, incident: list[tuple[int, Pt]]) -> str:
+    """Name the junction from its degree and the directions leaving it."""
+    degree = len(incident)
+    if degree <= 1:
+        return "end"
+    if degree >= 4:
+        return "X"
+    if degree == 3:
+        return "T"
+    (_, d0), (_, d1) = incident
+    dot = abs(d0[0] * d1[0] + d0[1] * d1[1])
+    return "collinear" if dot > 0.99 else "L"
+
+
+def resolve_junctions(walls: list[WallSeg] | tuple[WallSeg, ...],
+                      snap_in: float = 1.0,
+                      extend_in: float = 6.0,
+                      min_dangle_ft: float = 0.5) -> WallGraph:
+    """Full R2 pipeline: cluster -> extend -> split -> re-cluster -> classify.
+
+    Tolerances are in inches and are reported on the result so a run's
+    junction behaviour is auditable.
+    """
+    walls = [w for w in walls if w.length_ft > 1e-9]
+    if not walls:
+        return WallGraph((), (), ())
+
+    snapped, _ = cluster_endpoints(walls, snap_in=snap_in)
+    extended = extend_to_intersections(snapped, extend_in=extend_in)
+    # A wall that extension collapsed to a point (its end snapped onto an
+    # intersection where its start already sat) is an artifact, not a wall:
+    # left in, it would both survive dangle pruning (its two endpoints are
+    # the same node, so both have degree > 1) and spuriously split whatever
+    # wall passes through that point.
+    extended = tuple(w for w in extended if w.length_ft > 1e-6)
+    resnapped, nodes = cluster_endpoints(extended, snap_in=snap_in)
+    split = split_through_walls(resnapped, nodes, tol_in=snap_in)
+    final, nodes = cluster_endpoints(split, snap_in=snap_in)
+
+    # prune dangles: short walls with a free end
+    incident_count: dict[Pt, int] = {}
+    for w in final:
+        incident_count[w.start] = incident_count.get(w.start, 0) + 1
+        incident_count[w.end] = incident_count.get(w.end, 0) + 1
+
+    kept = tuple(w for w in final
+                 if w.length_ft >= min_dangle_ft
+                 or (incident_count[w.start] > 1 and incident_count[w.end] > 1))
+
+    incident: dict[Pt, list[tuple[int, Pt]]] = {}
+    for idx, w in enumerate(kept):
+        incident.setdefault(w.start, []).append((idx, _direction(w.start, w.end)))
+        incident.setdefault(w.end, []).append((idx, _direction(w.end, w.start)))
+
+    junctions = tuple(
+        Junction(point=pt,
+                 wall_indices=tuple(sorted(i for i, _ in inc)),
+                 kind=_classify(pt, inc))
+        for pt, inc in sorted(incident.items())
+        if len(inc) > 1)
+
+    unresolved = tuple(pt for pt, inc in sorted(incident.items()) if len(inc) == 1)
+
+    return WallGraph(walls=kept, junctions=junctions, unresolved=unresolved)
