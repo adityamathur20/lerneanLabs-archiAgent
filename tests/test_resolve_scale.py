@@ -51,3 +51,20 @@ def test_raises_when_too_few_dimensions_match():
     with pytest.raises(ScaleGateError, match="matched"):
         resolve_scale([_dim(14.4167), _dim(13.8333)],
                       (14.4167 * 11.861, 13.8333 * 11.861))
+
+
+def test_resolves_the_real_drawing_within_the_gate(demolition_pdf):
+    """Regression: synthetic fixtures have uniform candidate density and hid a
+    selection bug that returned 10.68 pt/ft instead of ~11.67 on this drawing."""
+    from archiagent.ingest.pdf_vector import load_pdf
+    from archiagent.scale.dimensions import extract_dimensions
+    from archiagent.scale.resolve import candidate_runs
+
+    ps = load_pdf(demolition_pdf)
+    result = resolve_scale(extract_dimensions(ps),
+                           candidate_runs(ps, {"walll", "wall"}))
+
+    assert 11.5 < result.units_per_foot < 11.9
+    assert result.matched_count >= 15
+    assert result.max_residual_in < 2.0
+    assert result.convention == "clear"
