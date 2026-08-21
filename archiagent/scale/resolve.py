@@ -33,6 +33,7 @@ class ScaleResult:
     residuals_in: tuple[float, ...]
     max_residual_in: float
     matched_count: int
+    total_dimensions: int = 0
 
 
 def candidate_runs(ps: PrimitiveSet, layers: set[str]) -> tuple[float, ...]:
@@ -74,11 +75,19 @@ def resolve_scale(dims: list[DimensionText] | tuple[DimensionText, ...],
     dimensions measure balconies or openings rather than wall-layer geometry.
     They are excluded from the supporting set, not treated as errors.
     """
+    dims = [d for d in dims if d.feet > 0]
     if not dims or not runs:
         raise ScaleGateError("no dimensions or no candidate runs to match")
 
     sorted_runs = sorted(runs)
-    candidates = sorted({run / d.feet for d in dims for run in runs if d.feet > 0})
+    raw = sorted({run / d.feet for d in dims for run in runs})
+    # Collapse candidates to one representative per 0.01% band. Scale precision
+    # of 1e-4 is far finer than the 2in gate needs (2in over 10ft is ~1.7%),
+    # so this changes no outcome while cutting the scoring loop enormously.
+    candidates: list[float] = []
+    for c in raw:
+        if not candidates or c - candidates[-1] > 1e-4 * c:
+            candidates.append(c)
     if not candidates:
         raise ScaleGateError("no scale candidates could be formed")
 
@@ -101,10 +110,11 @@ def resolve_scale(dims: list[DimensionText] | tuple[DimensionText, ...],
                 len(best_support), -max(best_support, default=0.0)):
             best_scale, best_support = c, s
 
-    if len(best_support) < min_matches:
+    required = max(min_matches, math.ceil(0.25 * len(dims)))
+    if len(best_support) < required:
         raise ScaleGateError(
-            f"only {len(best_support)} dimensions matched within the "
-            f"{max_residual_in}in residual gate; need {min_matches}")
+            f"only {len(best_support)} of {len(dims)} dimensions matched within "
+            f"the {max_residual_in}in residual gate; need {required}")
 
     return ScaleResult(
         units_per_foot=best_scale,
@@ -112,4 +122,5 @@ def resolve_scale(dims: list[DimensionText] | tuple[DimensionText, ...],
         residuals_in=tuple(round(r, 3) for r in sorted(best_support)),
         max_residual_in=round(max(best_support), 3),
         matched_count=len(best_support),
+        total_dimensions=len(dims),
     )

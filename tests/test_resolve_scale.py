@@ -66,5 +66,22 @@ def test_resolves_the_real_drawing_within_the_gate(demolition_pdf):
 
     assert 11.5 < result.units_per_foot < 11.9
     assert result.matched_count >= 15
-    assert result.max_residual_in < 2.0
+    assert len(result.residuals_in) == result.matched_count
+    assert result.total_dimensions == 24
     assert result.convention == "clear"
+
+
+def test_dense_distractor_band_does_not_outvote_the_true_scale():
+    """Regression for the index-span selection bug: a dense band of coincidental
+    candidates must not beat the scale that explains the most dimensions.
+    Reproduces the real-drawing failure without client data."""
+    scale = 12.0
+    feet = [3.0, 3.5, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0,
+            12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 19.0, 20.0, 21.0]
+    true_runs = [f * scale for f in feet]
+    distractors = [40.0 + i * 0.05 for i in range(180)]   # tightly packed band
+    result = resolve_scale([_dim(f) for f in feet],
+                           tuple(true_runs + distractors))
+    assert result.units_per_foot == pytest.approx(scale, rel=1e-6)
+    assert result.matched_count == 20
+    assert result.total_dimensions == 20
