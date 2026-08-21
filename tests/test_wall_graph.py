@@ -72,3 +72,20 @@ def test_resolution_is_idempotent():
     twice = resolve_junctions(list(once.walls))
     assert sorted(j.point for j in once.junctions) == \
            sorted(j.point for j in twice.junctions)
+
+
+def test_dangle_chain_prunes_to_a_fixpoint():
+    """Removing one dangle exposes the next. A single pass computes every degree
+    BEFORE any removal, so it keeps the chain's inner link: at evaluation time
+    that link still sees its outer neighbour.
+
+    Thresholds are deliberately separated. With the defaults, extend_in (6in) and
+    min_dangle_ft (0.5ft) are the same length, so any wall short enough to be a
+    dangle is also short enough for extension to fuse it — the fixpoint branch is
+    unreachable. The chain is diagonal to avoid collinearity with the ring.
+    """
+    chain = [_w((10.0, 10.0), (11.0, 11.0)),   # inner link, touches the corner
+             _w((11.0, 11.0), (12.0, 12.0))]   # outer link, free end
+    graph = resolve_junctions(_ring() + chain, min_dangle_ft=2.0)
+    assert len(graph.walls) == 4
+    assert graph.unresolved == ()
