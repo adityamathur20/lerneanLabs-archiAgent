@@ -25,6 +25,7 @@ import ifcopenshell.api.pset
 import ifcopenshell.api.root
 import ifcopenshell.api.spatial
 import ifcopenshell.api.unit
+import ifcopenshell.guid
 import ifcopenshell.util.shape_builder
 
 from archiagent.model import BuildingModel
@@ -56,8 +57,11 @@ def author_ifc(model: BuildingModel, out_path: str | Path) -> Path:
     sb = ifcopenshell.util.shape_builder.ShapeBuilder(f)
     height_m = model.wall_height_ft * FT
 
-    # Task 14 will need idx -> IFC wall entity for IfcRelConnectsPathElements;
-    # keep the loop indexed so that mapping is a one-line addition later.
+    # idx -> IFC wall entity, for IfcRelConnectsPathElements below. Walls of
+    # zero length are skipped, so this map has gaps relative to model.walls;
+    # junction code below must tolerate a missing index.
+    wall_entities: dict[int, object] = {}
+
     for idx, w in enumerate(model.walls):
         length_m = w.length_ft * FT
         if length_m <= 0.0:
@@ -97,6 +101,31 @@ def author_ifc(model: BuildingModel, out_path: str | Path) -> Path:
             "ScaleUnitsPerFoot": round(model.scale.units_per_foot, 6),
             "ScaleMaxResidualIn": model.scale.max_residual_in,
         })
+
+        wall_entities[idx] = wall
+
+    def _connection_type(wall_index: int, point) -> str:
+        """ATSTART / ATEND if the junction is at a wall's end, else ATPATH."""
+        w = model.walls[wall_index]
+        if math.dist(point, w.start) < 1e-6:
+            return "ATSTART"
+        if math.dist(point, w.end) < 1e-6:
+            return "ATEND"
+        return "ATPATH"
+
+    for junction in model.junctions:
+        indices = [i for i in junction.wall_indices if i in wall_entities]
+        for a, b in zip(indices, indices[1:]):
+            f.create_entity(
+                "IfcRelConnectsPathElements",
+                GlobalId=ifcopenshell.guid.new(),
+                RelatingElement=wall_entities[a],
+                RelatedElement=wall_entities[b],
+                RelatingPriorities=[],
+                RelatedPriorities=[],
+                RelatingConnectionType=_connection_type(a, junction.point),
+                RelatedConnectionType=_connection_type(b, junction.point),
+            )
 
     for i, space in enumerate(model.spaces):
         sp = run("root.create_entity", f, ifc_class="IfcSpace",
