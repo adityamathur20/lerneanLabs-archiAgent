@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 from archiagent.primitives import Pt, PrimitiveSet
 
-AXIS_TOL = 0.02
+AXIS_TOL_FT = 0.02  # feet; below this a segment counts as axis-aligned
 
 
 @dataclass(frozen=True)
@@ -94,10 +94,10 @@ def detect_walls_paired_lines(ps: PrimitiveSet, wall_layers: set[str],
         for (x0, y0), (x1, y1) in p.segments():
             fx0, fy0 = x0 / units_per_foot, y0 / units_per_foot
             fx1, fy1 = x1 / units_per_foot, y1 / units_per_foot
-            if abs(fy1 - fy0) < AXIS_TOL and abs(fx1 - fx0) >= min_len_ft:
+            if abs(fy1 - fy0) < AXIS_TOL_FT and abs(fx1 - fx0) >= min_len_ft:
                 horizontal.append((min(fx0, fx1), max(fx0, fx1),
                                    (fy0 + fy1) / 2.0, p.layer))
-            elif abs(fx1 - fx0) < AXIS_TOL and abs(fy1 - fy0) >= min_len_ft:
+            elif abs(fx1 - fx0) < AXIS_TOL_FT and abs(fy1 - fy0) >= min_len_ft:
                 vertical.append((min(fy0, fy1), max(fy0, fy1),
                                  (fx0 + fx1) / 2.0, p.layer))
 

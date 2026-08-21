@@ -20,6 +20,7 @@ from archiagent.primitives import PrimitiveSet
 from archiagent.scale.dimensions import DimensionText
 
 MIN_RUN_UNITS = 10.0  # ignore hatch ticks and glyph fragments
+AXIS_TOL_UNITS = 0.02  # source units; below this a segment counts as axis-aligned
 
 
 class ScaleGateError(Exception):
@@ -44,7 +45,7 @@ def candidate_runs(ps: PrimitiveSet, layers: set[str]) -> tuple[float, ...]:
     for p in ps.by_layer(layers):
         for (x0, y0), (x1, y1) in p.segments():
             dx, dy = abs(x1 - x0), abs(y1 - y0)
-            if dx > 0.02 and dy > 0.02:
+            if dx > AXIS_TOL_UNITS and dy > AXIS_TOL_UNITS:
                 continue  # not axis-aligned
             length = math.hypot(dx, dy)
             if length >= MIN_RUN_UNITS:

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 from archiagent.primitives import PrimitiveSet
 
-AXIS_TOL = 0.02  # units; below this a segment counts as axis-aligned
+AXIS_TOL_UNITS = 0.02  # source units; below this a segment counts as axis-aligned
 
 
 @dataclass(frozen=True)
@@ -61,7 +61,7 @@ def build_inventory(ps: PrimitiveSet) -> tuple[LayerStats, ...]:
             for (x0, y0), (x1, y1) in p.segments():
                 total += 1
                 dx, dy = abs(x1 - x0), abs(y1 - y0)
-                if dx < AXIS_TOL or dy < AXIS_TOL:
+                if dx < AXIS_TOL_UNITS or dy < AXIS_TOL_UNITS:
                     axis += 1
                 lengths.append(math.hypot(dx, dy))
                 xs.extend((x0, x1))
