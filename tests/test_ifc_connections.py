@@ -1,5 +1,4 @@
 import ifcopenshell
-import pytest
 
 from archiagent.geometry.junctions import resolve_junctions
 from archiagent.geometry.spaces import detect_spaces

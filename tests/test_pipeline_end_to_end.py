@@ -1,5 +1,4 @@
 import ifcopenshell
-import pytest
 
 from archiagent.classify.layers import StubClassifier
 from archiagent.classify.roles import Role

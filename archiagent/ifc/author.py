@@ -13,6 +13,7 @@ Verified API traps for ifcopenshell 0.8.5 (PLAN.md §4):
 
 from __future__ import annotations
 
+import itertools
 import math
 from pathlib import Path
 
@@ -115,7 +116,7 @@ def author_ifc(model: BuildingModel, out_path: str | Path) -> Path:
 
     for junction in model.junctions:
         indices = [i for i in junction.wall_indices if i in wall_entities]
-        for a, b in zip(indices, indices[1:]):
+        for a, b in itertools.combinations(indices, 2):
             f.create_entity(
                 "IfcRelConnectsPathElements",
                 GlobalId=ifcopenshell.guid.new(),
