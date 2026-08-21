@@ -55,3 +55,16 @@ def test_extension_is_idempotent():
     once = extend_to_intersections([h, v], extend_in=6.0)
     twice = extend_to_intersections(list(once), extend_in=6.0)
     assert once == twice
+
+
+def test_mutual_undershoot_still_meets():
+    """Both walls stop 2in short of their shared corner — the normal case, since
+    paired-line detection ends each centerline half a wall-thickness short. A guard
+    requiring the corner to lie strictly on the other wall deadlocks here: each
+    wall waits for the other to arrive first."""
+    h = _w((0.0, 0.0), (10.0 - 2.0 / 12, 0.0))
+    v = _w((10.0, 2.0 / 12), (10.0, 8.0))
+    out = extend_to_intersections([h, v], extend_in=6.0)
+    assert out[0].end == pytest.approx((10.0, 0.0))
+    assert out[1].start == pytest.approx((10.0, 0.0))
+    assert out[0].end == out[1].start

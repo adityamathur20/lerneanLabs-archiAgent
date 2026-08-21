@@ -98,6 +98,18 @@ def _param_on(p: Pt, a: Pt, b: Pt) -> float:
     return ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / denom
 
 
+def _distance_to_segment(p: Pt, a: Pt, b: Pt) -> float:
+    """Distance from p to the SEGMENT a-b (not its infinite line)."""
+    t = max(0.0, min(1.0, _param_on(p, a, b)))
+    proj = (a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]))
+    return math.dist(p, proj)
+
+
+def _nz(p: Pt) -> Pt:
+    """Normalize negative zero to positive zero."""
+    return (p[0] + 0.0, p[1] + 0.0)
+
+
 def extend_to_intersections(walls: list[WallSeg] | tuple[WallSeg, ...],
                             extend_in: float = 6.0) -> tuple[WallSeg, ...]:
     """Close undershoots and trim overshoots at wall intersections.
@@ -119,16 +131,17 @@ def extend_to_intersections(walls: list[WallSeg] | tuple[WallSeg, ...],
             if hit is None:
                 continue
 
-            # The intersection must lie on (or within a hair of) wall j's body,
-            # otherwise these two walls do not actually meet.
-            tj = _param_on(hit, wj.start, wj.end)
-            if not (-1e-9 <= tj <= 1.0 + 1e-9):
+            # The corner must lie on, or within the same budget of, wall j.
+            # A mutual undershoot leaves it just past j's end: at a corner both
+            # walls stop half a wall-thickness short, so requiring the corner to
+            # be strictly ON j deadlocks — each wall waits for the other.
+            if _distance_to_segment(hit, wj.start, wj.end) > budget_ft:
                 continue
 
             if math.dist(hit, ends[i]) <= budget_ft:
-                ends[i] = hit
+                ends[i] = _nz(hit)
             elif math.dist(hit, starts[i]) <= budget_ft:
-                starts[i] = hit
+                starts[i] = _nz(hit)
 
     return tuple(replace(w, start=starts[k], end=ends[k])
                  for k, w in enumerate(walls))
