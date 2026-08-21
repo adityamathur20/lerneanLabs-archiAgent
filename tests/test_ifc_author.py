@@ -1,0 +1,86 @@
+import math
+
+import ifcopenshell
+import pytest
+
+from archiagent.geometry.junctions import resolve_junctions
+from archiagent.geometry.spaces import detect_spaces
+from archiagent.geometry.walls import WallSeg
+from archiagent.ifc.author import author_ifc
+from archiagent.model import BuildingModel
+from archiagent.scale.resolve import ScaleResult
+
+FT = 0.3048
+
+
+def _w(start, end, t_in=4.0):
+    return WallSeg(start, end, t_in / 12.0, "WALLS", "paired-line", "measured")
+
+
+def _ring(size=10.0):
+    return [
+        _w((0.0, 0.0), (size, 0.0)),
+        _w((size, 0.0), (size, size)),
+        _w((size, size), (0.0, size)),
+        _w((0.0, size), (0.0, 0.0)),
+    ]
+
+
+@pytest.fixture
+def model():
+    graph = resolve_junctions(_ring())
+    return BuildingModel(
+        walls=graph.walls, junctions=graph.junctions,
+        unresolved=graph.unresolved, spaces=detect_spaces(graph),
+        scale=ScaleResult(11.861, "clear", (0.2,), 0.2, 3),
+        layer_roles={"WALLS": "wall_structural"},
+        source_path="x.pdf", source_sha256="abc", wall_height_ft=10.0)
+
+
+def test_writes_a_valid_ifc4_file(model, tmp_path):
+    out = author_ifc(model, tmp_path / "m.ifc")
+    f = ifcopenshell.open(out)
+    assert f.schema == "IFC4"
+    assert len(f.by_type("IfcWall")) == 4
+    assert len(f.by_type("IfcBuildingStorey")) == 1
+
+
+def test_walls_are_parametric_extrusions_not_meshes(model, tmp_path):
+    f = ifcopenshell.open(author_ifc(model, tmp_path / "m.ifc"))
+    for wall in f.by_type("IfcWall"):
+        item = wall.Representation.Representations[0].Items[0]
+        assert item.is_a() == "IfcExtrudedAreaSolid"
+
+
+def test_wall_height_matches_the_model(model, tmp_path):
+    f = ifcopenshell.open(author_ifc(model, tmp_path / "m.ifc"))
+    depth = f.by_type("IfcWall")[0].Representation.Representations[0].Items[0].Depth
+    assert depth == pytest.approx(10.0 * FT)
+
+
+def test_wall_is_placed_at_its_start_point_not_its_midpoint(model, tmp_path):
+    """Regression for the ShapeBuilder corner-anchor trap that scattered
+    49 walls in the spike. The first ring wall runs (0,0)->(10,0)."""
+    f = ifcopenshell.open(author_ifc(model, tmp_path / "m.ifc"))
+    origins = {tuple(round(c, 4) for c in w.ObjectPlacement
+                     .RelativePlacement.Location.Coordinates)
+               for w in f.by_type("IfcWall")}
+    assert (0.0, 0.0, 0.0) in origins
+
+
+def test_spaces_are_emitted_and_aggregated_to_the_storey(model, tmp_path):
+    f = ifcopenshell.open(author_ifc(model, tmp_path / "m.ifc"))
+    spaces = f.by_type("IfcSpace")
+    assert len(spaces) == 1
+    parents = {rel.RelatingObject.is_a()
+               for rel in f.by_type("IfcRelAggregates")
+               if spaces[0] in rel.RelatedObjects}
+    assert "IfcBuildingStorey" in parents
+
+
+def test_provenance_property_set_round_trips(model, tmp_path):
+    f = ifcopenshell.open(author_ifc(model, tmp_path / "m.ifc"))
+    values = {p.NominalValue.wrappedValue for p in f.by_type("IfcPropertySingleValue")}
+    assert "WALLS" in values
+    assert "paired-line" in values
+    assert "measured" in values
