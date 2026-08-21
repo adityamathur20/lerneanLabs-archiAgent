@@ -69,6 +69,27 @@ def test_resolves_the_real_drawing_within_the_gate(demolition_pdf):
     assert len(result.residuals_in) == result.matched_count
     assert result.total_dimensions == 24
     assert result.convention == "clear"
+    # Every dimension is accounted for, matched or not -- none are dropped.
+    assert result.matched_count + result.unmatched_count == result.total_dimensions
+    assert len(result.unmatched_residuals_in) == result.unmatched_count
+    assert result.unmatched_count == 3
+    assert all(r > 2.0 for r in result.unmatched_residuals_in)
+
+
+def test_unmatched_dimensions_are_reported_not_dropped():
+    """A dimension that measures non-wall geometry (e.g. a balcony) must still
+    surface its residual, not vanish silently from the result."""
+    scale = 11.861
+    feet = (14.4167, 13.8333, 7.0, 3.0)
+    runs = tuple(f * scale for f in feet)
+    # A fifth dimension with no matching run at all -- far outside the gate.
+    dims = [_dim(f) for f in feet] + [_dim(50.0)]
+    result = resolve_scale(dims, runs)
+    assert result.matched_count == 4
+    assert result.unmatched_count == 1
+    assert len(result.unmatched_residuals_in) == 1
+    assert result.unmatched_residuals_in[0] > 2.0
+    assert result.matched_count + result.unmatched_count == result.total_dimensions
 
 
 def test_dense_distractor_band_does_not_outvote_the_true_scale():

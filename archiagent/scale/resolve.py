@@ -34,6 +34,8 @@ class ScaleResult:
     max_residual_in: float
     matched_count: int
     total_dimensions: int = 0
+    unmatched_residuals_in: tuple[float, ...] = ()
+    unmatched_count: int = 0
 
 
 def candidate_runs(ps: PrimitiveSet, layers: set[str]) -> tuple[float, ...]:
@@ -91,24 +93,29 @@ def resolve_scale(dims: list[DimensionText] | tuple[DimensionText, ...],
     if not candidates:
         raise ScaleGateError("no scale candidates could be formed")
 
-    def support(scale: float) -> list[float]:
-        """Residuals in inches for every dimension this scale explains."""
-        out: list[float] = []
+    def support(scale: float) -> tuple[list[float], list[float]]:
+        """Residuals in inches for every dimension, split into those this
+        scale explains within the gate and those it does not."""
+        matched: list[float] = []
+        unmatched: list[float] = []
         for d in dims:
             predicted = d.feet * scale
             err = _nearest_distance(sorted_runs, predicted) / scale * 12.0
             if err <= max_residual_in:
-                out.append(err)
-        return out
+                matched.append(err)
+            else:
+                unmatched.append(err)
+        return matched, unmatched
 
     best_scale = candidates[0]
     best_support: list[float] = []
+    best_unmatched: list[float] = []
     for c in candidates:
-        s = support(c)
+        s, u = support(c)
         # more dimensions explained wins; ties broken by tighter worst residual
         if (len(s), -max(s, default=0.0)) > (
                 len(best_support), -max(best_support, default=0.0)):
-            best_scale, best_support = c, s
+            best_scale, best_support, best_unmatched = c, s, u
 
     required = max(min_matches, math.ceil(0.25 * len(dims)))
     if len(best_support) < required:
@@ -123,4 +130,6 @@ def resolve_scale(dims: list[DimensionText] | tuple[DimensionText, ...],
         max_residual_in=round(max(best_support), 3),
         matched_count=len(best_support),
         total_dimensions=len(dims),
+        unmatched_residuals_in=tuple(round(r, 3) for r in sorted(best_unmatched)),
+        unmatched_count=len(best_unmatched),
     )

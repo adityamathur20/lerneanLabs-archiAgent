@@ -56,6 +56,21 @@ def test_scale_above_the_gate_is_an_error():
     assert "scale_gate_failed" in codes
 
 
+def test_unmatched_dimension_is_a_warning_not_an_error():
+    """A dimension outside the residual gate must be surfaced, not dropped --
+    but it is a `warn`, since we cannot tell whether it measures non-wall
+    geometry (a balcony) or the scale is actually wrong."""
+    scale = ScaleResult(units_per_foot=11.861, convention="clear",
+                        residuals_in=(0.2, 0.5, 0.7), max_residual_in=0.7,
+                        matched_count=3, total_dimensions=4,
+                        unmatched_residuals_in=(9.5,), unmatched_count=1)
+    issues = validate(_model(_ring(), scale=scale))
+    matches = [i for i in issues if i.code == "dimension_outside_gate"]
+    assert len(matches) == 1
+    assert matches[0].severity == "warn"
+    assert "9.5" in matches[0].msg
+
+
 def test_zero_thickness_wall_is_reported():
     walls = _ring() + [WallSeg((2.0, 2.0), (4.0, 2.0), 0.0,
                                "WALLS", "paired-line", "measured")]

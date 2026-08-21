@@ -24,6 +24,13 @@ def validate(model: BuildingModel) -> tuple[Issue, ...]:
             f"max residual {model.scale.max_residual_in}in exceeds "
             f"the {MAX_RESIDUAL_IN}in gate (R1)"))
 
+    for residual in model.scale.unmatched_residuals_in:
+        issues.append(Issue(
+            "warn", "scale", "dimension_outside_gate",
+            f"printed dimension off by {residual:.1f}in, beyond the "
+            f"{MAX_RESIDUAL_IN}in gate; it may measure non-wall geometry, "
+            "or the scale may be wrong"))
+
     for pt in model.unresolved:
         issues.append(Issue(
             "error", f"node@{pt[0]:.2f},{pt[1]:.2f}", "unresolved_junction",
