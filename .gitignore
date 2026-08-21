@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Client drawings — NEVER commit (see PLAN.md, this repo is public)
+*.pdf
+*.dwg
+*.dxf
+input-floorplans/
