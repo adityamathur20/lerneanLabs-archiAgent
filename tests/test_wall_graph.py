@@ -60,9 +60,47 @@ def test_dangle_below_minimum_length_is_pruned():
     assert len(graph.walls) == 4
 
 
+def _asymmetric_ring():
+    """A non-square shape with a nib wall (v1) sitting between the end of the
+    bottom wall (h) and the real right wall (v2), so h can reach v2 only by
+    hopping through v1 -- two individually-within-budget steps that must NOT
+    compound into one over-budget jump. This is the exact shape of the order-
+    dependence bug Fix 1 addressed: pre-fix, processing h before v1 let its
+    running endpoint (already snapped to v1) get re-measured against v2 and
+    jump straight through it; processing v1 first did not.
+
+    v1 is deliberately shorter than the room height (6ft, not 8ft) so it
+    never comes within budget of the top wall -- only h is ambiguous here.
+    Nothing in this shape is symmetric under reflection or rotation, so a
+    wrongly-extended wall shows up as a different endpoint, not hidden by
+    coincidental symmetry.
+    """
+    return [
+        _w((0.0, 0.0), (9.6, 0.0)),          # h: undershoots v1 by 4.8in
+        _w((10.0, 0.0), (10.0, 6.0)),        # v1: the nib -- h's real target
+        _w((10.4, 0.0), (10.4, 8.0)),        # v2: the real right wall
+        _w((10.4, 8.0), (0.0, 8.0)),         # top: closes v2 and the left side
+        _w((0.0, 8.0), (0.0, 0.0)),          # left: closes back down to h's start
+    ]
+
+
+def _wall_key(w):
+    return (w.start, w.end, w.thickness_ft)
+
+
 def test_resolution_is_order_independent():
-    fwd = resolve_junctions(_ring())
-    rev = resolve_junctions(list(reversed(_ring())))
+    """A weaker version of this test compared junction POINTS only, on the
+    symmetric square ring -- it passed even under the order-dependent
+    extension bug (walls could be extended differently depending on
+    processing order while still landing on the same junction points by
+    symmetry). Compare the full resolved wall geometry instead, and use an
+    asymmetric fixture where a wrong extension would show up as a different
+    wall endpoint, not hide behind symmetry.
+    """
+    fwd = resolve_junctions(_asymmetric_ring())
+    rev = resolve_junctions(list(reversed(_asymmetric_ring())))
+    assert sorted(_wall_key(w) for w in fwd.walls) == \
+           sorted(_wall_key(w) for w in rev.walls)
     assert sorted(j.point for j in fwd.junctions) == \
            sorted(j.point for j in rev.junctions)
 
