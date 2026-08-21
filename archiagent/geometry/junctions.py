@@ -123,7 +123,7 @@ def extend_to_intersections(walls: list[WallSeg] | tuple[WallSeg, ...],
     starts = [w.start for w in walls]
     ends = [w.end for w in walls]
 
-    for i, wi in enumerate(walls):
+    for i in range(len(walls)):
         for j, wj in enumerate(walls):
             if i == j:
                 continue

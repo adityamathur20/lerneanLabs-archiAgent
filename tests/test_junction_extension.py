@@ -68,3 +68,16 @@ def test_mutual_undershoot_still_meets():
     assert out[0].end == pytest.approx((10.0, 0.0))
     assert out[1].start == pytest.approx((10.0, 0.0))
     assert out[0].end == out[1].start
+
+
+def test_mixed_budget_leaves_a_doorway_open():
+    """One wall is 2in short (within budget), the other 20in short (its own
+    doorway). The guard on wall j must re-block independently: neither wall may
+    close. This is the riskiest geometry the distance-to-segment guard admits —
+    without it, loosening that guard could seal a doorway invisibly."""
+    h = _w((0.0, 0.0), (10.0 - 2.0 / 12, 0.0))
+    v = _w((10.0, 20.0 / 12), (10.0, 8.0))
+    out = extend_to_intersections([h, v], extend_in=6.0)
+    assert out[0].end == pytest.approx((10.0 - 2.0 / 12, 0.0))
+    assert out[1].start == pytest.approx((10.0, 20.0 / 12))
+    assert out[0].end != out[1].start
