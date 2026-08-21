@@ -57,3 +57,35 @@ def test_preserves_wall_attributes():
     assert walls[0].thickness_ft == pytest.approx(8 / 12)
     assert walls[0].source_layer == "WALLS"
     assert walls[0].thickness_source == "measured"
+
+
+def test_clustering_chains_transitively_by_design():
+    """Single-linkage: A-B and B-C are each 0.6in apart so both merge, pulling in
+    C even though A-C spans 1.2in and exceeds the 1in tolerance. This is intended —
+    a multi-wall corner with accumulated drafting error should collapse to one node.
+
+    Documented rather than guarded: bridging a real 30in doorway would need ~30
+    endpoints spaced <=1in along it, and paired-line detection emits exactly two
+    endpoints per wall. On the real drawing every cluster has diameter 0.00in.
+
+    Spacings are deliberately 0.6in, not 1.0in: asserting threshold behaviour AT
+    the threshold is decided by floating-point noise, not by the algorithm.
+    """
+    a = _w((0.0, 0.0), (10.0, 0.0))
+    b = _w((10.0 + 0.6 / 12, 0.0), (10.0 + 0.6 / 12, 8.0))
+    c = _w((10.0 + 1.2 / 12, 0.0), (10.0 + 1.2 / 12, -8.0))
+    walls, nodes = cluster_endpoints([a, b, c], snap_in=1.0)
+    assert walls[0].end == walls[1].start == walls[2].start
+    assert len(nodes) == 4
+
+
+def test_empty_wall_list_returns_empty():
+    assert cluster_endpoints([], snap_in=1.0) == ((), ())
+
+
+def test_zero_length_wall_collapses_to_one_node():
+    """A degenerate wall must not crash clustering; Task 10 drops these later."""
+    z = _w((5.0, 5.0), (5.0, 5.0))
+    walls, nodes = cluster_endpoints([z], snap_in=1.0)
+    assert walls[0].start == walls[0].end == (5.0, 5.0)
+    assert len(nodes) == 1
