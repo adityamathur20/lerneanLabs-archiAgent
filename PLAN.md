@@ -119,6 +119,14 @@ instead of estimating thousands of coordinates.
 
 ### 3.3 Scale is recoverable to sub-inch
 
+**Provisional — superseded.** The 11.861 pt/ft figure below was derived
+from a single-dimension anchor on an early spike, before consensus scale
+resolution existed. The M1–M5 implementation's 21-dimension consensus
+value for this drawing is **11.6667 pt/ft** (max residual 1.568in); treat
+that as the ground truth, not the anchor below. See "Limitations
+discovered during M1–M5 implementation" for how badly a single- or
+few-dimension anchor can mislead.
+
 Anchoring on one printed dimension and predicting seven others against
 actual vector geometry:
 
@@ -801,6 +809,55 @@ throwaway version of it. Ship the real one before broadening.
 - MEP routing and systems → **Phase 3**
 - Structural analysis, code compliance checking
 - A custom review UI — the review surface is Blender plus conversation
+
+---
+
+## Limitations discovered during M1–M5 implementation
+
+These were found while implementing and reviewing Tasks 1–14 (scale
+resolution, junction resolution, space detection, IFC authoring). They are
+recorded here — not only in review notes, which are not committed — so a
+future maintainer does not have to rediscover them from scratch.
+
+1. **A wrong scale can pass the R1 gate.** Measured: with hatch layers
+   misclassified as walls, `resolve_scale` settled on 8.36 pt/ft against a
+   true 11.67 — a 40% error — with *both* a higher match count (22 vs 21)
+   and a lower residual (1.904 vs 1.568) than the correct answer. Neither
+   of the gate's criteria distinguishes them. The structural fix is §7
+   Stage 2's spatial association of each dimension string with its own
+   dimension-line geometry, which M1–M5 simplified to length-magnitude
+   matching. **This is now a required M6 item, not optional.**
+2. **Centerline polygonization cannot detect rooms with doors.** Every
+   room has a door; a door is a genuine gap; correctly refusing to close
+   gaps beyond 6in means a room with a door never forms a closed ring.
+   Spaces therefore use a separate `space_boundary_graph` that bridges
+   door-width gaps for polygonization only, never mutating wall geometry.
+3. **Room coverage is bounded by wall coverage, not by bridging.**
+   Collinear-gap bridging was implemented and measured: it creates
+   bridges but yields zero additional rooms. The binding constraint is
+   the deferred hatch-body wall detector.
+4. **`extend_in` (6in) and `min_dangle_ft` (0.5ft) are the same length**,
+   so the fixpoint dangle-pruning branch is unreachable in production
+   runs. Exercised only by tests that separate the thresholds.
+5. **Ingest drops curve and quad path items** — 619 of 14,006 paths in
+   the sample drawing. M1–M5 needs only lines and rects; **M6 opening
+   detection will need arcs** to derive door swing from arc centre and
+   radius.
+6. **Genuine mid-run X-crossings are not resolved.** `cluster_endpoints`
+   creates nodes only at endpoints and `split_through_walls` splits only
+   at existing nodes, so two walls crossing mid-run with no endpoint at
+   the crossing produce no junction. Zero occurrences on the sample
+   drawing. **§7 Stage 3b's claim that the taxonomy handles this case is
+   incorrect and should be read as aspirational.**
+7. **`extend_to_intersections` picks the last-iterated intersection, not
+   the nearest one, when a wall's original endpoint is within budget of
+   two different walls' lines.** See the `KNOWN LIMITATION` comment in
+   `archiagent/geometry/junctions.py::extend_to_intersections`, immediately
+   above the budget check, for the reproduction and why nearest-wins was
+   prototyped but parked: it drops the sample drawing's only detected
+   space from 1 to 0, and today's practical impact is nil because wall
+   detection order is stable per input PDF. Sequence a nearest-wins fix
+   with the M6 hatch-body detector.
 
 ---
 

@@ -144,6 +144,20 @@ def extend_to_intersections(walls: list[WallSeg] | tuple[WallSeg, ...],
             if _distance_to_segment(hit, wj.start, wj.end) > budget_ft:
                 continue
 
+            # KNOWN LIMITATION (deliberately parked, not a bug to fix in place):
+            # when a wall's original endpoint is within budget of TWO different
+            # walls' lines, the LAST candidate iterated wins rather than the
+            # NEAREST. Verified: h=(0,0)-(9.7,0) against verticals at x=9.8 and
+            # x=10.1 resolves to 10.1 or 9.8 depending on input order. Travel
+            # stays inside the budget either way (that is Fix 1 above), so the
+            # doorway guarantee holds; what varies is WHICH intersection is
+            # chosen. Switching to nearest-wins is principled and was prototyped
+            # successfully, but on the sample drawing it drops the only detected
+            # space from 1 to 0, because that ring closes via a farther
+            # intersection. Practical impact is nil today: detect_walls_paired_lines
+            # emits a stable order, so a given PDF always yields the same model.
+            # Sequence this fix with the M6 hatch-body detector, when room
+            # detection no longer hangs on a single marginal ring.
             if math.dist(hit, orig_ends[i]) <= budget_ft:
                 ends[i] = _nz(hit)
             elif math.dist(hit, orig_starts[i]) <= budget_ft:
