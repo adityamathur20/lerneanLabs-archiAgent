@@ -100,6 +100,19 @@ def test_every_wall_carries_its_own_provenance_pset(model, tmp_path):
         assert {pr.Name for pr in provenance[0].HasProperties} == expected
 
 
+def test_spaces_have_geometry(model, tmp_path):
+    """Regression: IfcSpace was authored with no Representation at all, so it
+    was invisible when the model was loaded in Blender. It must carry a real
+    extruded solid built from Space.boundary."""
+    f = ifcopenshell.open(author_ifc(model, tmp_path / "m.ifc"))
+    spaces = f.by_type("IfcSpace")
+    assert spaces
+    for sp in spaces:
+        assert sp.Representation is not None
+        item = sp.Representation.Representations[0].Items[0]
+        assert item.is_a() == "IfcExtrudedAreaSolid"
+
+
 def test_spaces_are_emitted_and_aggregated_to_the_storey(model, tmp_path):
     f = ifcopenshell.open(author_ifc(model, tmp_path / "m.ifc"))
     spaces = f.by_type("IfcSpace")

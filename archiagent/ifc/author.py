@@ -135,5 +135,26 @@ def author_ifc(model: BuildingModel, out_path: str | Path) -> Path:
         run("aggregate.assign_object", f, products=[sp],
             relating_object=storey)
 
+        # Space.boundary is a closed ring (shapely repeats the first point at
+        # the end); drop that repeat before building the polyline, which
+        # closes itself via closed=True.
+        ring = space.boundary
+        if len(ring) > 1 and ring[0] == ring[-1]:
+            ring = ring[:-1]
+        points = [(p[0] * FT, p[1] * FT) for p in ring]
+        curve = sb.polyline(points, closed=True)
+        space_solid = sb.extrude(curve, magnitude=height_m,
+                                 extrusion_vector=(0.0, 0.0, 1.0))
+        run("geometry.assign_representation", f, product=sp,
+            representation=sb.get_representation(body, [space_solid]))
+
+        # Boundary coordinates are already absolute (same world frame as the
+        # walls' own start/end points), so place the space at the identity
+        # origin rather than offsetting it like a wall's local profile.
+        sp.ObjectPlacement = f.createIfcLocalPlacement(
+            None,
+            f.createIfcAxis2Placement3D(
+                f.createIfcCartesianPoint((0.0, 0.0, 0.0))))
+
     f.write(str(out_path))
     return out_path
