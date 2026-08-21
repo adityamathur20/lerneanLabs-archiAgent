@@ -73,3 +73,12 @@ def test_rejects_a_pair_wider_than_it_is_long():
     ps = _ps([((0.0, 0.0), (14.4, 0.0)),       # 1.2 ft long
               ((0.0, 20.0), (14.4, 20.0))])    # 20in away
     assert detect_walls_paired_lines(ps, {"WALLS"}, units_per_foot=12.0) == ()
+
+
+def test_duplicate_walls_are_emitted_once():
+    """Duplicates inflate junction degree downstream and misclassify corners
+    (a duplicated L reads as an X), and would emit duplicate IfcWall entities."""
+    ps = _ps([((0.0, 0.0), (120.0, 0.0)), ((0.0, 4.0), (120.0, 4.0)),
+              ((0.0, 0.0), (120.0, 0.0)), ((0.0, 4.0), (120.0, 4.0))])
+    walls = detect_walls_paired_lines(ps, {"WALLS"}, units_per_foot=12.0)
+    assert len(walls) == 1

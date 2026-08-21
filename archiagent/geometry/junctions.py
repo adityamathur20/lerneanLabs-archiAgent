@@ -151,7 +151,10 @@ def extend_to_intersections(walls: list[WallSeg] | tuple[WallSeg, ...],
 class Junction:
     point: Pt
     wall_indices: tuple[int, ...]
-    kind: str  # "L" | "T" | "X" | "collinear" | "end"
+    kind: str  # "L" | "T" | "X" | "collinear"
+    # NOTE: `_classify` can also return "end" for a degree-<=1 node, but
+    # `resolve_junctions` never constructs a Junction for one -- free endpoints
+    # surface in `WallGraph.unresolved` instead. Do not branch on kind == "end".
 
 
 @dataclass(frozen=True)
@@ -229,6 +232,7 @@ def resolve_junctions(walls: list[WallSeg] | tuple[WallSeg, ...],
     Tolerances are in inches and are reported on the result so a run's
     junction behaviour is auditable.
     """
+    # Drop zero-length input walls outright (1e-9: exact-input tolerance).
     walls = [w for w in walls if w.length_ft > 1e-9]
     if not walls:
         return WallGraph((), (), ())
@@ -239,21 +243,33 @@ def resolve_junctions(walls: list[WallSeg] | tuple[WallSeg, ...],
     # intersection where its start already sat) is an artifact, not a wall:
     # left in, it would both survive dangle pruning (its two endpoints are
     # the same node, so both have degree > 1) and spuriously split whatever
-    # wall passes through that point.
+    # wall passes through that point. The threshold here (1e-6) is looser
+    # than the 1e-9 used above on raw input: the intersection math the walls
+    # just passed through (division, multiple coordinate combinations) is
+    # not exact, so a "collapsed" wall's length may not land on precisely
+    # 0.0 -- it needs a coarser epsilon to still be caught as degenerate.
     extended = tuple(w for w in extended if w.length_ft > 1e-6)
     resnapped, nodes = cluster_endpoints(extended, snap_in=snap_in)
     split = split_through_walls(resnapped, nodes, tol_in=snap_in)
     final, nodes = cluster_endpoints(split, snap_in=snap_in)
 
-    # prune dangles: short walls with a free end
-    incident_count: dict[Pt, int] = {}
-    for w in final:
-        incident_count[w.start] = incident_count.get(w.start, 0) + 1
-        incident_count[w.end] = incident_count.get(w.end, 0) + 1
-
-    kept = tuple(w for w in final
-                 if w.length_ft >= min_dangle_ft
-                 or (incident_count[w.start] > 1 and incident_count[w.end] > 1))
+    # Prune dangles: short walls with a free end. Iterate to a fixpoint --
+    # removing one dangle can expose the next along a chain (free-end -> A ->
+    # P1 -> B -> real junction): computing degree once, before any removal,
+    # would keep B even after A's removal leaves P1 truly degree-1.
+    kept = list(final)
+    while True:
+        incident_count: dict[Pt, int] = {}
+        for w in kept:
+            incident_count[w.start] = incident_count.get(w.start, 0) + 1
+            incident_count[w.end] = incident_count.get(w.end, 0) + 1
+        survivors = [w for w in kept
+                     if w.length_ft >= min_dangle_ft
+                     or (incident_count[w.start] > 1 and incident_count[w.end] > 1)]
+        if len(survivors) == len(kept):
+            break
+        kept = survivors
+    kept = tuple(kept)
 
     incident: dict[Pt, list[tuple[int, Pt]]] = {}
     for idx, w in enumerate(kept):

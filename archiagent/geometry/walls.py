@@ -114,4 +114,18 @@ def detect_walls_paired_lines(ps: PrimitiveSet, wall_layers: set[str],
         walls.append(WallSeg((center, lo), (center, hi), thickness,
                              layer, "paired-line", "measured"))
 
-    return tuple(walls)
+    # Two runs of the same geometry can pair identically (and the same geometry
+    # can appear on more than one layer). Duplicates inflate junction degree and
+    # misclassify corners -- a duplicated L reads as an X -- and would emit
+    # duplicate IfcWall entities downstream.
+    seen: set = set()
+    unique: list[WallSeg] = []
+    for w in walls:
+        a = (round(w.start[0], 4), round(w.start[1], 4))
+        b = (round(w.end[0], 4), round(w.end[1], 4))
+        key = (min(a, b), max(a, b), round(w.thickness_ft, 4))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(w)
+    return tuple(unique)
