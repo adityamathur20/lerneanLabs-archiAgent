@@ -8,6 +8,10 @@ from __future__ import annotations
 
 from archiagent.model import BuildingModel, Issue
 
+# Inclusive boundary: a residual of exactly 2.0in passes. This matches
+# resolve_scale, which admits a dimension to its supporting set with
+# `err <= max_residual_in` -- so the resolver can legitimately return exactly
+# 2.0 and the validator must not then contradict it.
 MAX_RESIDUAL_IN = 2.0
 
 

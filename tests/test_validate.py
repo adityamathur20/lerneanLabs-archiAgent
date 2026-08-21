@@ -1,7 +1,8 @@
 import pytest
+from dataclasses import replace
 
 from archiagent.geometry.junctions import resolve_junctions
-from archiagent.geometry.spaces import detect_spaces
+from archiagent.geometry.spaces import Space, detect_spaces
 from archiagent.geometry.walls import WallSeg
 from archiagent.model import BuildingModel, Issue
 from archiagent.scale.resolve import ScaleResult
@@ -70,3 +71,39 @@ def test_model_with_no_spaces_is_reported():
 def test_envelope_is_the_bounding_box_of_all_walls():
     model = _model(_ring(10.0))
     assert model.envelope() == (0.0, 0.0, 10.0, 10.0)
+
+
+def test_zero_length_wall_is_reported():
+    """Defensive guard. `resolve_junctions` drops zero-length walls at entry, so
+    this cannot arise through the normal pipeline — but Tasks 13 and 14 construct
+    BuildingModel directly, and the validator must catch a degenerate wall from
+    any assembly route."""
+    model = _model(_ring())
+    broken = replace(model, walls=model.walls + (
+        WallSeg((2.0, 2.0), (2.0, 2.0), 4 / 12,
+                "WALLS", "paired-line", "measured"),))
+    codes = {i.code for i in validate(broken)}
+    assert "zero_length_wall" in codes
+
+
+def test_default_thickness_is_warned_not_silent():
+    """Fallback thicknesses (4in interior / 8in exterior) must be visible in the
+    issue list, never applied silently — provenance is what makes a wrong wall
+    traceable to a wrong assumption."""
+    walls = _ring() + [WallSeg((2.0, 2.0), (6.0, 2.0), 8 / 12,
+                               "WALLS", "paired-line", "default")]
+    issues = validate(_model(walls))
+    defaults = [i for i in issues if i.code == "default_thickness"]
+    assert len(defaults) == 1
+    assert defaults[0].severity == "warn"
+    assert defaults[0].entity.startswith("W")
+
+
+def test_unclosed_space_boundary_is_reported():
+    """Space.boundary must be a closed ring; Task 13 reads it to author IfcSpace."""
+    model = _model(_ring())
+    broken = replace(model, spaces=(Space(boundary=((0.0, 0.0), (10.0, 0.0),
+                                                    (10.0, 10.0)),
+                                          area_sqft=50.0),))
+    codes = {i.code for i in validate(broken)}
+    assert "unclosed_space" in codes
