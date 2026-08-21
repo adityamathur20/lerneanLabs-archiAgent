@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from archiagent.classify.inventory import build_inventory
@@ -48,12 +49,11 @@ def extract(pdf_path: str | Path, classifier: LayerClassifier, page: int = 0,
         source_sha256=ps.source_sha256,
         wall_height_ft=wall_height_ft,
     )
-    return model
+    return replace(model, issues=validate(model))
 
 
 def run_pipeline(pdf_path: str | Path, classifier: LayerClassifier,
                  out_ifc: str | Path, page: int = 0
                  ) -> tuple[Path, tuple[Issue, ...]]:
     model = extract(pdf_path, classifier, page=page)
-    issues = validate(model)
-    return author_ifc(model, out_ifc), issues
+    return author_ifc(model, out_ifc), model.issues

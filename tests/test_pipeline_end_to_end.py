@@ -54,6 +54,18 @@ def test_end_to_end_on_the_real_demolition_plan(demolition_pdf, tmp_path):
     assert errors == [], f"R1 scale gate failed: {errors}"
 
 
+def test_extract_populates_model_issues(demolition_pdf):
+    """Regression: BuildingModel.issues was always () from extract(), even
+    though validate() found problems on the same model. run_pipeline must be
+    able to rely on model.issues without a second validate() call."""
+    from archiagent.pipeline import extract
+    from archiagent.validate import validate
+
+    model = extract(demolition_pdf, StubClassifier(DEMOLITION_ROLES))
+    assert model.issues != ()
+    assert model.issues == validate(model)
+
+
 def test_scale_resolves_to_the_drawings_true_scale(demolition_pdf):
     """Regression for a 40% scale error that PASSED the R1 gate.
 
