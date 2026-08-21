@@ -122,6 +122,12 @@ def extend_to_intersections(walls: list[WallSeg] | tuple[WallSeg, ...],
     budget_ft = extend_in / 12.0
     starts = [w.start for w in walls]
     ends = [w.end for w in walls]
+    # Budget is measured from the ORIGINAL endpoints. Measuring from the running
+    # values lets extension compound across hops: a wall reaches one intersection,
+    # then measures the next from there, and can walk clean through a doorway in
+    # two individually-legal steps. It also makes the result depend on list order.
+    orig_starts = list(starts)
+    orig_ends = list(ends)
 
     for i in range(len(walls)):
         for j, wj in enumerate(walls):
@@ -138,9 +144,9 @@ def extend_to_intersections(walls: list[WallSeg] | tuple[WallSeg, ...],
             if _distance_to_segment(hit, wj.start, wj.end) > budget_ft:
                 continue
 
-            if math.dist(hit, ends[i]) <= budget_ft:
+            if math.dist(hit, orig_ends[i]) <= budget_ft:
                 ends[i] = _nz(hit)
-            elif math.dist(hit, starts[i]) <= budget_ft:
+            elif math.dist(hit, orig_starts[i]) <= budget_ft:
                 starts[i] = _nz(hit)
 
     return tuple(replace(w, start=starts[k], end=ends[k])
