@@ -142,7 +142,7 @@ W1 replaces it:
 @dataclass(frozen=True)
 class LayerDecision:
     layer: str
-    role: str          # Role.value
+    role: Role         # a str Enum, so .value is the wire form
     confidence: float  # 0.0-1.0
     reason: str        # "" when the source is not an LLM
     source: str        # "llm" | "manual" | "default"
@@ -156,6 +156,13 @@ a role the model chose from one a human supplied via `--walls` and from
 the `IGNORE` default applied to a layer the model omitted — W2 must not
 invite correction of a value the human already set.
 
+The three values are exact: `"llm"` — the model answered for this layer;
+`"manual"` — a human supplied it, which includes the layers a partial
+`--walls` map leaves unmentioned (naming some layers as walls is a
+deliberate statement that the rest are not); `"default"` — the model was
+asked about this layer and did not answer, so `IGNORE` was applied. Only
+`"default"` warrants a warning, which is what keeps `--walls` runs quiet.
+
 This is a safe change: `layer_roles` is written by the pipeline and read
 by nothing — not the IFC author, not the validator. Only three test
 fixtures construct it. `--classify-only` prints exactly these fields, so
@@ -167,14 +174,29 @@ Default **`claude-haiku-4-5`**. This is 16–53 short judgements over a
 bounded vocabulary; the task does not need a frontier model, and the
 default is the user's explicit choice.
 
-Two provider constraints that shape the call:
+Provider constraints that shape the call, verified against the installed
+SDKs on 2026-08-23 rather than recalled:
 
-- **Haiku 4.5 rejects `output_config.effort`** — do not send it.
-- **Haiku 4.5 does not take adaptive thinking.** Send no `thinking`
-  parameter. Classification does not need it.
-- `output_config: {format: {...}}` (structured outputs) is used; the
-  deprecated top-level `output_format` is not.
-- `max_tokens` 2048 — enough for ~53 layers with short reasons.
+- **Structured outputs are supported on Haiku 4.5.** Confirmed against the
+  supported-model list; the design does not rest on an assumption here.
+- `output_config: {format: {"type": "json_schema", "schema": ...}}` on
+  `messages.create()`. The deprecated top-level `output_format` is not
+  used. `anthropic>=1.0` accepts `output_config` on `messages.create`
+  (checked by introspection, not memory).
+- **Send no `effort`.** `effort: "max"` errors on Haiku 4.5, and no
+  effort setting benefits a classification this shallow.
+- **Send no `thinking`.** Adaptive thinking is documented for the Opus and
+  Sonnet tiers; Haiku 4.5 is not among them, and classification does not
+  need it.
+- **`additionalProperties: false` is required on every object** in a
+  structured-output schema.
+- **Numeric constraints are not supported** in structured-output schemas —
+  `minimum`/`maximum` are stripped. `confidence` therefore cannot be
+  range-constrained by the schema; the classifier validates it is a real
+  number and clamps it to [0, 1] itself.
+- `max_tokens` 2048 — enough for ~53 layers with short reasons. A reply
+  that stops on `max_tokens` is truncated JSON and is raised as
+  `LLMSchemaError`, never parsed.
 
 ---
 
