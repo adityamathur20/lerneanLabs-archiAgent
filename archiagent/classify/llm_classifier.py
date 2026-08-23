@@ -61,12 +61,21 @@ def decisions_from_reply(reply: dict,
         # to enforce.
         confidence = min(1.0, max(0.0, float(raw_conf)))
 
+        if name in answered:
+            raise LLMSchemaError(
+                f"layer {name!r} appears more than once in the reply; the "
+                "reply is ambiguous about its role")
+
         reason = entry.get("reason")
         answered[name] = (role, confidence,
                           reason if isinstance(reason, str) else "")
 
     out: list[LayerDecision] = []
     for s in stats:
+        # A reply entry naming a layer that is not in the inventory is
+        # deliberately dropped, not raised: only inventory names are ever
+        # looked up here, so a hallucinated name can never reach geometry,
+        # and failing a whole run over one spurious row would be worse.
         if s.name in answered:
             role, confidence, reason = answered[s.name]
             out.append(LayerDecision(s.name, role, confidence, reason, "llm"))

@@ -86,6 +86,36 @@ def test_a_non_numeric_confidence_is_a_schema_error():
         decisions_from_reply(_reply(("a", "furniture", "high", "")), _stats("a"))
 
 
+def test_a_duplicate_layer_name_is_a_schema_error():
+    with pytest.raises(LLMSchemaError, match="more than once"):
+        decisions_from_reply(
+            _reply(("a", "furniture", 0.8, ""), ("a", "ignore", 0.5, "")),
+            _stats("a"))
+
+
+def test_a_reply_that_is_not_a_dict_is_a_schema_error():
+    with pytest.raises(LLMSchemaError, match="layers"):
+        decisions_from_reply(None, _stats("a"))
+    with pytest.raises(LLMSchemaError, match="layers"):
+        decisions_from_reply([], _stats("a"))
+
+
+def test_a_layers_value_that_is_not_a_list_is_a_schema_error():
+    with pytest.raises(LLMSchemaError, match="layers"):
+        decisions_from_reply({"layers": {"a": "furniture"}}, _stats("a"))
+
+
+def test_a_boolean_confidence_is_a_schema_error_because_bool_is_an_int():
+    with pytest.raises(LLMSchemaError, match="confidence"):
+        decisions_from_reply(_reply(("a", "furniture", True, "")), _stats("a"))
+
+
+def test_a_none_reason_becomes_an_empty_string():
+    out = decisions_from_reply(_reply(("a", "furniture", 0.8, None)),
+                               _stats("a"))
+    assert out[0].reason == ""
+
+
 def test_classifier_sends_the_schema_and_both_prompts():
     fake = FakeLLMClient(_reply(("a", "furniture", 0.8, "short segments")))
     LLMLayerClassifier(fake).classify(_stats("a"))
