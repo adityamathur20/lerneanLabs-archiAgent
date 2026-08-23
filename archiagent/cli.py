@@ -121,6 +121,24 @@ def main(argv: list[str] | None = None) -> int:
     if authoring and not args.out_ifc:
         print("error: OUT_IFC is required unless --inspect or "
               "--classify-only is given", file=sys.stderr)
+        if args.walls:
+            # --walls is nargs="+" and OUT_IFC is nargs="?", so if OUT_IFC
+            # comes AFTER --walls on the command line, argparse resolves
+            # OUT_IFC to nothing and --walls eats everything that follows
+            # it -- including what was meant as the output path. Name that
+            # explicitly rather than leaving the user staring at a command
+            # line where they plainly did supply OUT_IFC.
+            print("note: --walls consumes every argument after it, so "
+                  "OUT_IFC must come first.", file=sys.stderr)
+            last = args.walls[-1]
+            if last.endswith(".ifc"):
+                remaining = " ".join(args.walls[:-1])
+                print(f"      {last!r} was read as a layer name -- did "
+                      f"you mean:", file=sys.stderr)
+                suggestion = f"python -m archiagent PDF {last}"
+                if remaining:
+                    suggestion += f" --walls {remaining}"
+                print(f"      {suggestion}", file=sys.stderr)
         return EXIT_USAGE
 
     # The classifier is built BEFORE the PDF is read, so a bad provider or a

@@ -21,6 +21,10 @@ python -m archiagent PDF OUT_IFC [options]
   -v                  report issues by severity
 ```
 
+`OUT_IFC` must appear before `--walls` -- `--walls` takes one or more layer
+names and consumes every argument after it, so an `OUT_IFC` placed after
+`--walls` gets read in as a layer name instead.
+
 Exit codes: `0` success, `1` pipeline error (scale gate, no walls, unreadable
 PDF), `2` LLM unavailable, `3` bad usage.
 

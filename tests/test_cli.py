@@ -14,7 +14,27 @@ def test_no_arguments_is_a_usage_error(capsys):
 
 def test_authoring_without_an_output_path_is_a_usage_error(capsys):
     assert main(["plan.pdf"]) == EXIT_USAGE
-    assert "OUT_IFC" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "OUT_IFC" in err
+    # No --walls was given, so the argument-order hint does not apply and
+    # must not appear.
+    assert "--walls" not in err
+
+
+def test_walls_swallowing_out_ifc_explains_the_argument_order(capsys):
+    """--walls is nargs="+" and eats every argument after it, including an
+    OUT_IFC placed after it on the command line. The diagnostic must name
+    that, not just repeat "OUT_IFC is required" as if none were typed."""
+    code = main(["plan.pdf", "--walls", "A", "B", "out.ifc"])
+    assert code == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "--walls" in err
+    assert "out.ifc" in err
+
+
+def test_no_argv_falls_back_to_sys_argv(monkeypatch):
+    monkeypatch.setattr("sys.argv", ["archiagent"])
+    assert main() == EXIT_USAGE
 
 
 def test_a_missing_pdf_is_a_pipeline_error_naming_the_path(capsys):
@@ -52,6 +72,7 @@ def test_walls_runs_the_whole_pipeline_with_no_llm(demolition_pdf, tmp_path,
     normal on a real drawing and do not stop the IFC being written. Exit
     status therefore tracks the R1 scale gate, not the issue list."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     out_ifc = tmp_path / "demolition.ifc"
 
     code = main([str(demolition_pdf), str(out_ifc), "--walls", "walll"])
