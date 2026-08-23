@@ -121,6 +121,46 @@ that doesn't exist" cannot occur:
 what W2's review surface will display beside each interpretation, and it
 makes a wrong classification diagnosable instead of merely wrong.
 
+### What the pipeline keeps
+
+**The confidence and the reason must survive into `BuildingModel`.** W2
+displays a confidence per layer beside a correction affordance, and it
+cannot display what the pipeline threw away.
+
+Today it *is* thrown away. `pipeline.py:47` reads
+
+```python
+layer_roles={name: role.value for name, (role, _) in classification.items()},
+```
+
+— the `_` is the confidence, discarded, and there is no reason field at
+all. `BuildingModel.layer_roles` is `dict[str, str]`.
+
+W1 replaces it:
+
+```python
+@dataclass(frozen=True)
+class LayerDecision:
+    layer: str
+    role: str          # Role.value
+    confidence: float  # 0.0-1.0
+    reason: str        # "" when the source is not an LLM
+    source: str        # "llm" | "manual" | "default"
+
+# on BuildingModel, replacing layer_roles: dict[str, str]
+layer_decisions: tuple[LayerDecision, ...]
+```
+
+Ordered, so W2 renders layers in a stable sequence. `source` distinguishes
+a role the model chose from one a human supplied via `--walls` and from
+the `IGNORE` default applied to a layer the model omitted — W2 must not
+invite correction of a value the human already set.
+
+This is a safe change: `layer_roles` is written by the pipeline and read
+by nothing — not the IFC author, not the validator. Only three test
+fixtures construct it. `--classify-only` prints exactly these fields, so
+the W1 CLI is already the text-mode preview of the W2 surface.
+
 ### Model and parameters
 
 Default **`claude-haiku-4-5`**. This is 16–53 short judgements over a
@@ -170,7 +210,9 @@ Nothing is silently guessed. Each failure names its cause and what to do.
 **Low confidence does not block.** A layer classified at 0.3 is used and
 surfaced as an issue, consistent with `PLAN.md`'s rule that nothing is
 silently corrected. Gating on confidence is W2's job, once there is
-somewhere for a human to adjudicate.
+somewhere for a human to adjudicate — and W1's obligation is to carry the
+confidence there intact (see §3, *What the pipeline keeps*), not to decide
+what counts as too low.
 
 ### Caching
 
@@ -267,3 +309,6 @@ implementation report instead.
 4. `--inspect` and `--walls` work with no credentials configured.
 5. Every layer in each drawing receives a role and a confidence, and any
    layer the model omits is reported rather than silently ignored.
+6. `BuildingModel` carries a `LayerDecision` per layer — role, confidence,
+   reason, source — and `--classify-only` prints all four. Nothing W2
+   needs to display is discarded by the pipeline.
