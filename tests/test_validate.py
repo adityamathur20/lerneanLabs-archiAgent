@@ -1,6 +1,8 @@
 import pytest
 from dataclasses import replace
 
+from archiagent.classify.layers import LayerDecision
+from archiagent.classify.roles import Role
 from archiagent.geometry.junctions import resolve_junctions
 from archiagent.geometry.spaces import Space, detect_spaces
 from archiagent.geometry.walls import WallSeg
@@ -33,7 +35,9 @@ def _model(walls, scale=None):
     return BuildingModel(
         walls=graph.walls, junctions=graph.junctions,
         unresolved=graph.unresolved, spaces=detect_spaces(graph),
-        scale=scale or _scale(), layer_roles={"WALLS": "wall_structural"},
+        scale=scale or _scale(),
+        layer_decisions=(LayerDecision("WALLS", Role.WALL_STRUCTURAL, 0.95,
+                                       "", "manual"),),
         source_path="x.pdf", source_sha256="abc", wall_height_ft=10.0)
 
 

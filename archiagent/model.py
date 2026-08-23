@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from archiagent.classify.layers import LayerDecision
 from archiagent.geometry.junctions import Junction
 from archiagent.geometry.spaces import Space
 from archiagent.geometry.walls import WallSeg
@@ -26,7 +27,7 @@ class BuildingModel:
     unresolved: tuple[Pt, ...]
     spaces: tuple[Space, ...]
     scale: ScaleResult
-    layer_roles: dict[str, str]
+    layer_decisions: tuple[LayerDecision, ...]
     source_path: str
     source_sha256: str
     wall_height_ft: float = 10.0

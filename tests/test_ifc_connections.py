@@ -1,5 +1,7 @@
 import ifcopenshell
 
+from archiagent.classify.layers import LayerDecision
+from archiagent.classify.roles import Role
 from archiagent.geometry.junctions import resolve_junctions
 from archiagent.geometry.spaces import detect_spaces
 from archiagent.geometry.walls import WallSeg
@@ -18,7 +20,8 @@ def _model(walls):
         walls=graph.walls, junctions=graph.junctions,
         unresolved=graph.unresolved, spaces=detect_spaces(graph),
         scale=ScaleResult(11.861, "clear", (0.2,), 0.2, 3),
-        layer_roles={"WALLS": "wall_structural"},
+        layer_decisions=(LayerDecision("WALLS", Role.WALL_STRUCTURAL, 0.95,
+                                       "", "manual"),),
         source_path="x.pdf", source_sha256="abc", wall_height_ft=10.0)
 
 

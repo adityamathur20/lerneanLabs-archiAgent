@@ -647,7 +647,7 @@ Stages 0–7  ──▶  assembled model  ──▶  Stage 8  ──▶  model.i
              "residuals_in": [0.2, 0.0, 0.7, 0.5], "max_residual_in": 0.7,
              "confidence": 0.97 },
 
-  "layer_roles": { "WALLS": "wall_structural", "WALL HATCH": "wall_structural",
+  "layer_decisions": { "WALLS": "wall_structural", "WALL HATCH": "wall_structural",
                    "BEAM": "beam_overhead", "0": "ignore" },
 
   "levels": [ { "id": "L0", "ifc_guid": "1FdJRn48X10RjxNO4d$wwl",
@@ -673,6 +673,12 @@ Stages 0–7  ──▶  assembled model  ──▶  Stage 8  ──▶  model.i
                 "msg": "endpoint 1.8in from nearest wall, above snap tolerance" } ]
 }
 ```
+
+`layer_decisions` carries one `LayerDecision` per layer — role,
+confidence, reason and source. The earlier `layer_roles: dict[str, str]`
+discarded the classifier's confidence and had no field for a reason, which
+left the W2 review surface with nothing to display. See
+`docs/superpowers/specs/2026-08-23-w1-llm-layer-classification-design.md` §3.
 
 ### Why provenance is non-negotiable
 
