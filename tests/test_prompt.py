@@ -80,6 +80,17 @@ def test_prompt_version_is_derived_from_the_prompt_and_the_schema():
     assert all(c in "0123456789abcdef" for c in PROMPT_VERSION)
 
 
+def test_system_prompt_says_every_wall_layer_counts_not_just_the_best_one():
+    """Measured on the electrical drawing: WALL (96% axis-aligned, p50 4.6)
+    and WALLS (57%, p50 1.6) BOTH carry wall geometry, and the prompt's stated
+    axis%/p50 heuristic points at WALL alone -- which yields a ~6.6% scale
+    error that still passes the R1 gate. The prompt must not invite picking
+    one."""
+    lowered = SYSTEM_PROMPT.lower()
+    assert "every layer" in lowered
+    assert "several" in lowered or "multiple" in lowered
+
+
 def test_system_prompt_warns_that_hatch_is_not_a_wall():
     """Measured fact, not prompt-tuning: classifying the demolition plan's
     hatch layers as walls produced a 40% scale error that still passed the

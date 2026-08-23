@@ -39,7 +39,9 @@ unknown at this stage, so only RELATIVE magnitudes are meaningful):
 
 What the numbers usually mean:
 - Walls: near 100% axis-aligned, p50 long relative to other layers, bounding
-  box covering most of the plan.
+  box covering most of the plan. A drawing often splits its wall network
+  across several layers, so classify EVERY layer carrying wall geometry as a
+  wall rather than choosing a single best candidate.
 - Hatch (wall poche, fill): very many segments that are either near-zero
   length (degenerate points) or short diagonal strokes at one consistent
   angle. HATCH IS NOT A WALL. Wall detection pairs opposing wall FACES, and

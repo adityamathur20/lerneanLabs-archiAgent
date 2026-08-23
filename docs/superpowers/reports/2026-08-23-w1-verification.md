@@ -506,3 +506,37 @@ listed with the exact command and the success criterion(s) from
 
 If a second provider key is not available, that last item should be
 recorded as "not verified — no key available" rather than skipped silently.
+
+### The `WALL` vs `WALLS` question
+
+The electrical drawing carries **two** candidate wall layers, and measured
+with the `--walls` bypass they give materially different answers:
+
+| layer | axis-aligned | p50 | p90 | result via `--walls` |
+|---|---|---|---|---|
+| `WALL` | 96% | 4.6 | 51.0 | exit 0, scale 7.2806, residual **1.790in**, 43 walls |
+| `WALLS` | 57% | 1.6 | 11.2 | exit 0, scale 6.8267, residual 0.984in, 185 walls |
+
+`SYSTEM_PROMPT`'s stated heuristic — *"Walls: near 100% axis-aligned, p50
+long relative to other layers"* — describes `WALL`, and `WALL` alone yields
+a scale roughly 6.6% off the figure `WALLS` produces while still passing the
+R1 gate at 1.790in. This is the same shape as the 40% hatch error: a
+wrong-but-passing scale. The gate cannot catch it, so the prompt must not
+invite picking one layer.
+
+One sentence was added to the walls bullet stating that a drawing often
+splits its wall network across several layers and that every layer carrying
+wall geometry should be classified as a wall. Nothing else was re-tuned: the
+effect of a prompt change cannot be measured without a live call, and blind
+prompt tuning is the failure mode this project has already been burned by.
+
+**The first live run must answer this**: on
+`../input-floorplans/ELECTRICAL FINAL l PLAN.pdf`, record which layer(s) the
+classifier assigns a wall role, and the resulting scale and residual. If it
+picks `WALL` alone, the prompt's heuristic is actively steering toward the
+wrong-but-passing answer and needs measured revision — not a guess.
+
+Note that `PROMPT_VERSION` is now derived from `SYSTEM_PROMPT` plus the
+response schema, so this edit changed it (`21e97012a6dc` → `604821a21a69`)
+and every cache entry written under the old prompt is already unreachable.
+No manual cache clearing is needed before the live run.
