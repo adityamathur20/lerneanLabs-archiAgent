@@ -221,3 +221,92 @@ reconcile when they disagree?
 **W4** — How do two detectors merge without double-counting a wall found
 by both? Medial axis or minimum-area-rectangle for the centerline? Does a
 filled body carry different provenance from a paired-line wall?
+
+---
+
+## 6. Reconciliation with `archiAgent-flowDiag.drawio`
+
+The user's flow diagram was compared against this roadmap on 2026-08-23.
+It reads:
+
+```
+Start → 2D floorplan PDF → Floorplan Parser
+                              ├→ Dimension Reporting
+                              ├→ Symbol Recognition
+                              └→ MEP plan reporting etc.
+                                      ↓ (converge)
+              Confidence Score + Symbol graphics + correction window
+                                      ↓
+                              IFC generation
+                                      ↓
+                3D model loaded in Blender with LLM interface
+```
+
+### Where it agrees with what exists
+
+Input, parser, IFC generation and the Blender load are all built.
+"Dimension Reporting" is precisely the residual table (`residuals_in`,
+`unmatched_residuals_in`, `dimension_outside_gate`). The correction window
+sits *before* model build, matching W2 as roadmapped.
+
+### What the diagram gets right that `PLAN.md` understates
+
+**Three interpretation streams converge on ONE review surface.**
+`PLAN.md` treats dimension residuals (§7 Stage 2), symbol naming (§7
+Stage 6) and layer roles (§7 Stage 1) as separate concerns in separate
+stages. Unifying them into a single surface is a better frame, and W2's
+spec adopts it.
+
+### Corrections to this roadmap, from the diagram
+
+**W5 — Symbol recognition, added.** The diagram makes it a first-class
+branch; this roadmap omitted it entirely. `PLAN.md` §7 Stage 6 specifies
+the approach (cluster geometrically-identical repeated path groups, render
+one crop per cluster, LLM names each cluster once, propagate to all
+instances) but nothing is implemented.
+
+*Depends on:* W2, for review of the names — same write-back concern as W3.
+*Shares machinery with W3:* both are "cluster identical geometry, identify
+each cluster once, cache the result". They should share a clustering
+component and a library, not build two.
+*Size:* medium.
+
+**W2 needs a feedback loop.** The diagram is linear — correct, then
+generate. But correcting a *layer role* invalidates wall detection,
+junction resolution and room polygonization downstream; it is not a
+cosmetic edit. W2's spec must decide what re-runs on a correction and how
+that is surfaced. The diagram should gain an arrow from the correction
+window back to the parser.
+
+### Architectural divergence, resolved
+
+**MEP stays in Phase 3.** The diagram places MEP extraction inside the
+Phase 1 parse, reviewed on the same surface and emitted into the same IFC.
+Decided 2026-08-23: **Phase 1 finishes architectural-only** (walls,
+spaces, openings). MEP remains a Phase 3 subsystem consuming Phase 1's
+IFC. The diagram's MEP branch should be annotated as a later phase.
+
+*Noted for whoever builds Phase 3:* the electrical drawing already carries
+`cfl`, `LP`, `SPLIT AC`, `CEILING ROSE`, `CONDUIT` and `LIGHT CIRCUIT`
+layers, and MEP fixtures are symbols — so Phase 3 is likely to be mostly
+W5's machinery pointed at MEP roles, not new extraction.
+
+### What the diagram omits
+
+"Floorplan Parser" is one box concealing scale resolution, wall detection,
+junction resolution and room polygonization — the bulk of the 111 tests.
+Two consequences worth drawing: the **R1 gate can halt the flow** before
+Dimension Reporting is ever reached (this is what happens to the
+ground-floor plan today), and W3's text recovery is a precondition for
+that drawing rather than an enhancement.
+
+### Revised order
+
+```
+fraction-aware parse_dimension          ── ~1h, independent, do now
+W1  automatic layer classification      ── no deps
+ └─ W2  review & correction GUI         ── displays W1; gates W3 and W5
+     ├─ W3  text recovery
+     └─ W5  symbol recognition          ── shares clustering + library with W3
+W4  filled-body wall detection          ── independent, any time
+```
