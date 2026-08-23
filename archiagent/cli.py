@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import shlex
 import sys
 
 from archiagent.classify.cache import CachingClassifier
@@ -25,7 +26,7 @@ from archiagent.ifc.author import author_ifc
 from archiagent.ingest.pdf_vector import NoLayersError, load_pdf
 from archiagent.llm.client import LLMSchemaError, LLMUnavailable
 from archiagent.llm.config import build_client, config_from_env
-from archiagent.pipeline import extract
+from archiagent.pipeline import extract_from_primitives
 from archiagent.scale.resolve import ScaleGateError
 
 EXIT_OK = 0
@@ -73,11 +74,27 @@ def _print_inventory(stats) -> None:
               f"{s.length_p50:>8.1f} {s.length_p90:>8.1f}")
 
 
+MAX_REASON_CHARS = 60
+
+
+def _safe_reason(reason: str) -> str:
+    """The reason is model-authored text going straight to a terminal.
+
+    Control characters could rewrite the table (or worse, via ANSI escapes),
+    and an over-long reason destroys the column layout, so strip and clip
+    before printing.
+    """
+    clean = "".join(c for c in reason if c.isprintable())
+    if len(clean) > MAX_REASON_CHARS:
+        clean = clean[:MAX_REASON_CHARS - 1] + "…"
+    return clean
+
+
 def _print_decisions(decisions) -> None:
     print(f"{'layer':<24} {'role':<18} {'conf':>5}  {'source':<8} reason")
     for d in decisions:
         print(f"{d.layer:<24} {d.role.value:<18} {d.confidence:>5.2f}  "
-              f"{d.source:<8} {d.reason}")
+              f"{d.source:<8} {_safe_reason(d.reason)}")
 
 
 def _print_issues(issues) -> None:
@@ -102,7 +119,13 @@ def _classifier(args) -> LayerClassifier:
 
     cfg = config_from_env(provider=args.provider, model=args.model)
     inner = LLMLayerClassifier(build_client(cfg))
-    return CachingClassifier(inner, model=cfg.model, enabled=not args.no_cache)
+    return CachingClassifier(inner, model=cfg.model, provider=cfg.provider,
+                             base_url=cfg.base_url, enabled=not args.no_cache)
+
+
+def _unmatched_wall_names(names: list[str], stats) -> list[str]:
+    known = {s.name for s in stats}
+    return [n for n in names if n not in known]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -114,8 +137,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         args = parser.parse_args(argv)
-    except SystemExit:
-        return EXIT_USAGE
+    except SystemExit as e:
+        # argparse raises SystemExit(0) for -h/--help. That is a SUCCESSFUL
+        # help request, not bad usage -- reporting 3 breaks any
+        # `archiagent --help` install check.
+        return EXIT_OK if not e.code else EXIT_USAGE
 
     authoring = not (args.inspect or args.classify_only)
     if authoring and not args.out_ifc:
@@ -152,18 +178,53 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_LLM
 
     try:
+        # ONE load_pdf per run, for every mode. The inventory is needed
+        # before classification so --walls can be checked against the real
+        # layer names, and load_pdf is by far the most expensive step.
+        ps = load_pdf(args.pdf, page=args.page)
+        stats = build_inventory(ps)
+
         if args.inspect:
-            ps = load_pdf(args.pdf, page=args.page)
-            _print_inventory(build_inventory(ps))
+            _print_inventory(stats)
             return EXIT_OK
+
+        # A --walls name is an ASSERTION about the drawing. If it matches no
+        # layer, StubClassifier silently drops it -- and a mistyped name in a
+        # list of correct ones yields a complete IFC, at exit 0, built from
+        # half the wall network and scaled off the wrong candidate runs.
+        # That is a silent wrong answer, so it stops the run.
+        if args.walls:
+            unmatched = _unmatched_wall_names(args.walls, stats)
+            if unmatched:
+                print("error: --walls named "
+                      f"{len(unmatched)} layer(s) that are not in "
+                      f"{args.pdf}: {', '.join(repr(n) for n in unmatched)}",
+                      file=sys.stderr)
+                # Real drawing filenames contain spaces, so quote the path:
+                # the hint has to be runnable as printed.
+                print("hint: run `python -m archiagent "
+                      f"{shlex.quote(args.pdf)} --inspect` to see the "
+                      "drawing's real layer names (they are case-sensitive).",
+                      file=sys.stderr)
+                return EXIT_USAGE
 
         if args.classify_only:
-            ps = load_pdf(args.pdf, page=args.page)
-            _print_decisions(classifier.classify(build_inventory(ps)))
+            _print_decisions(classifier.classify(stats))
             return EXIT_OK
 
-        model = extract(args.pdf, classifier, page=args.page,
-                        wall_height_ft=args.height)
+        model = extract_from_primitives(ps, classifier,
+                                        wall_height_ft=args.height,
+                                        stats=stats)
+        # B1: authoring is inside the try so an unwritable output path
+        # produces the same clean `error: ...` as every other failure. Its
+        # own handler is nested because the outer one blames the INPUT
+        # path, and a failed write is not a failed read.
+        try:
+            out = author_ifc(model, args.out_ifc)
+        except (OSError, RuntimeError) as e:
+            print(f"error: could not write {args.out_ifc}: {e}",
+                  file=sys.stderr)
+            return EXIT_PIPELINE
     except (LLMUnavailable, LLMSchemaError) as e:
         # Both subclass RuntimeError, so this must precede the RuntimeError
         # catch below.
@@ -189,7 +250,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: could not read {args.pdf}: {e}", file=sys.stderr)
         return EXIT_PIPELINE
 
-    out = author_ifc(model, args.out_ifc)
     counts = collections.Counter(i.severity for i in model.issues)
     print(f"wrote {out}")
     print(f"  scale   {model.scale.units_per_foot:.4f} units/ft, "

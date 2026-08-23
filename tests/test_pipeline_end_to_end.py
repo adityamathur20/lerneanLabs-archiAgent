@@ -66,6 +66,38 @@ def test_extract_populates_model_issues(demolition_pdf):
     assert model.issues == validate(model)
 
 
+def test_no_wall_layers_names_the_cache_as_a_possible_cause(demolition_pdf):
+    """A wall-less classification can be served from disk under a key that
+    does not change on retry. The message has to mention --no-cache, or the
+    user has no way to know the escape hatch exists."""
+    import pytest
+
+    from archiagent.pipeline import extract
+
+    with pytest.raises(ValueError, match="--no-cache"):
+        extract(demolition_pdf, StubClassifier({}))
+
+
+def test_extract_from_primitives_does_not_reload_the_pdf(demolition_pdf):
+    """The CLI needs the inventory BEFORE classifying (to check --walls
+    names) and must not pay for load_pdf twice. extract_from_primitives takes
+    the already-parsed PrimitiveSet -- and the inventory alongside it."""
+    from archiagent.classify.inventory import build_inventory
+    from archiagent.ingest.pdf_vector import load_pdf
+    from archiagent.pipeline import extract, extract_from_primitives
+
+    ps = load_pdf(demolition_pdf)
+    stats = build_inventory(ps)
+    a = extract_from_primitives(ps, StubClassifier(DEMOLITION_ROLES),
+                                stats=stats)
+    b = extract(demolition_pdf, StubClassifier(DEMOLITION_ROLES))
+
+    assert a.scale == b.scale
+    assert a.walls == b.walls
+    assert a.source_path == b.source_path
+    assert a.source_sha256 == b.source_sha256
+
+
 def test_scale_resolves_to_the_drawings_true_scale(demolition_pdf):
     """Regression for a 40% scale error that PASSED the R1 gate.
 
