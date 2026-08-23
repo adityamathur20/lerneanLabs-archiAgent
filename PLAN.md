@@ -363,6 +363,18 @@ independently editable.
 layer role fixes dozens of walls at once — which is why provenance
 (§8) is mandatory.
 
+Implemented in W1 as `LLMLayerClassifier`
+(`archiagent/classify/llm_classifier.py`), backed by the `LLMClient` port in
+`archiagent/llm/`. `StubClassifier` is retained for tests and for the CLI's
+`--walls` bypass. Default model `claude-haiku-4-5`; the provider is
+configurable, and `--inspect` / `--walls` work with no credentials at all.
+See `docs/superpowers/specs/2026-08-23-w1-llm-layer-classification-design.md`
+and the measured results in
+`docs/superpowers/reports/2026-08-23-w1-verification.md`. Live-provider
+verification is outstanding — no API credentials were available when that
+report was written — see its "Outstanding: live verification" section for
+the commands still needed to close Task 8.
+
 ### Stage 2 — Scale resolution
 
 **Purpose:** establish the exact source-unit → foot factor.
