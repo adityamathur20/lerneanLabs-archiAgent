@@ -112,3 +112,12 @@ def test_an_sdk_error_becomes_unavailable_with_the_message_preserved(monkeypatch
     c, _ = _client_with(monkeypatch, raises=boom)
     with pytest.raises(LLMUnavailable, match="Anthropic"):
         c.classify_json(system="s", user="u", schema=SCHEMA)
+
+
+def test_an_unexpected_sdk_exception_becomes_unavailable(monkeypatch):
+    """A pydantic ValidationError inside create() is neither an APIError nor
+    any exception cli.py handles, so it escaped main() as a traceback and
+    exit 1. It still means the model was not reached: exit 2 is honest."""
+    c, _ = _client_with(monkeypatch, raises=TypeError("bad response body"))
+    with pytest.raises(LLMUnavailable, match="TypeError"):
+        c.classify_json(system="s", user="u", schema=SCHEMA)

@@ -58,6 +58,16 @@ class AnthropicClient:
             )
         except self._sdk.APIError as e:
             raise LLMUnavailable(f"Anthropic API call failed: {e}") from e
+        except Exception as e:
+            # Anything else out of the SDK -- a pydantic ValidationError on a
+            # non-conforming response body, a transport error the SDK does
+            # not wrap -- still means the model could not be reached. Exit 2
+            # is the honest code; letting it escape gives the user a
+            # traceback and exit 1. The APIError clause above stays first so
+            # its better message wins.
+            raise LLMUnavailable(
+                f"Anthropic API call failed unexpectedly "
+                f"({type(e).__name__}): {e}") from e
 
         stop = getattr(resp, "stop_reason", None)
         if stop == "max_tokens":

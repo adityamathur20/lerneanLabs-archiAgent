@@ -20,8 +20,9 @@ class _Choice:
 
 
 class _Resp:
-    def __init__(self, content, finish_reason="stop"):
-        self.choices = [_Choice(content, finish_reason)]
+    def __init__(self, content, finish_reason="stop", choices=None):
+        self.choices = ([_Choice(content, finish_reason)]
+                        if choices is None else choices)
 
 
 def _client_with(monkeypatch, response=None, raises=None):
@@ -94,4 +95,29 @@ def test_an_sdk_error_becomes_unavailable(monkeypatch):
     boom = openai.APIConnectionError(request=None)
     c, _ = _client_with(monkeypatch, raises=boom)
     with pytest.raises(LLMUnavailable, match="OpenAI-compatible"):
+        c.classify_json(system="s", user="u", schema=SCHEMA)
+
+
+def test_a_reply_with_no_content_is_a_schema_error(monkeypatch):
+    c, _ = _client_with(monkeypatch, _Resp(None, finish_reason="content_filter"))
+    with pytest.raises(LLMSchemaError, match="content_filter"):
+        c.classify_json(system="s", user="u", schema=SCHEMA)
+
+
+def test_an_empty_choices_array_is_a_schema_error(monkeypatch):
+    """Azure's content filter and some Groq/DeepSeek error shapes return
+    HTTP 200 with choices: []. Indexing it raised IndexError, which is
+    neither LLMUnavailable nor LLMSchemaError and escaped every handler in
+    cli.py -- the user got a traceback and exit 1, not the documented 2."""
+    c, _ = _client_with(monkeypatch, _Resp(None, choices=[]))
+    with pytest.raises(LLMSchemaError, match="no choices"):
+        c.classify_json(system="s", user="u", schema=SCHEMA)
+
+
+def test_an_unexpected_sdk_exception_becomes_unavailable(monkeypatch):
+    """A pydantic ValidationError inside create() is neither an APIError nor
+    any exception cli.py handles. It still means the model was not reached,
+    so exit 2 is the honest code."""
+    c, _ = _client_with(monkeypatch, raises=TypeError("bad response body"))
+    with pytest.raises(LLMUnavailable, match="TypeError"):
         c.classify_json(system="s", user="u", schema=SCHEMA)
