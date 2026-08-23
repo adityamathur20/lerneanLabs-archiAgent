@@ -647,8 +647,12 @@ Stages 0–7  ──▶  assembled model  ──▶  Stage 8  ──▶  model.i
              "residuals_in": [0.2, 0.0, 0.7, 0.5], "max_residual_in": 0.7,
              "confidence": 0.97 },
 
-  "layer_decisions": { "WALLS": "wall_structural", "WALL HATCH": "wall_structural",
-                   "BEAM": "beam_overhead", "0": "ignore" },
+  "layer_decisions": [
+    { "layer": "WALLS", "role": "wall_structural", "confidence": 0.98,
+      "reason": "solid double-line pair on a layer named WALLS",
+      "source": "llm" },
+    { "layer": "0", "role": "ignore", "confidence": 0.0, "reason": "",
+      "source": "manual" } ],
 
   "levels": [ { "id": "L0", "ifc_guid": "1FdJRn48X10RjxNO4d$wwl",
                 "name": "Ground Floor", "elevation": 0.0, "height": 12.0 } ],

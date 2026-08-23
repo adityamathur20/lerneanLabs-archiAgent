@@ -30,14 +30,14 @@ def _scale():
                        matched_count=3)
 
 
-def _model(walls, scale=None):
+def _model(walls, scale=None, layer_decisions=None):
     graph = resolve_junctions(walls)
     return BuildingModel(
         walls=graph.walls, junctions=graph.junctions,
         unresolved=graph.unresolved, spaces=detect_spaces(graph),
         scale=scale or _scale(),
-        layer_decisions=(LayerDecision("WALLS", Role.WALL_STRUCTURAL, 0.95,
-                                       "", "manual"),),
+        layer_decisions=layer_decisions or (
+            LayerDecision("WALLS", Role.WALL_STRUCTURAL, 0.95, "", "manual"),),
         source_path="x.pdf", source_sha256="abc", wall_height_ft=10.0)
 
 
@@ -126,3 +126,29 @@ def test_unclosed_space_boundary_is_reported():
                                           area_sqft=50.0),))
     codes = {i.code for i in validate(broken)}
     assert "unclosed_space" in codes
+
+
+def test_defaulted_layer_is_warned_not_silent():
+    """A layer the classifier was asked about and did not answer for is
+    defaulted to ignore -- that must be visible, never silently dropped."""
+    decisions = (
+        LayerDecision("WALLS", Role.WALL_STRUCTURAL, 0.95, "", "manual"),
+        LayerDecision("MYSTERY", Role.IGNORE, 0.0, "", "default"),
+    )
+    issues = validate(_model(_ring(), layer_decisions=decisions))
+    matches = [i for i in issues if i.code == "layer_unclassified"]
+    assert len(matches) == 1
+    assert matches[0].severity == "warn"
+    assert matches[0].entity == "MYSTERY"
+
+
+def test_manual_layer_does_not_warn():
+    """A partial --walls map deliberately leaves the rest unmentioned; those
+    layers come back with source='manual', not 'default', so they must not
+    generate a layer_unclassified warning per untouched layer."""
+    decisions = (
+        LayerDecision("WALLS", Role.WALL_STRUCTURAL, 0.95, "", "manual"),
+        LayerDecision("OTHER", Role.IGNORE, 0.0, "", "manual"),
+    )
+    issues = validate(_model(_ring(), layer_decisions=decisions))
+    assert [i for i in issues if i.code == "layer_unclassified"] == []
