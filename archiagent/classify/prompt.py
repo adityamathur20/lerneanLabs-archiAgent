@@ -14,15 +14,11 @@ separating a title block or sheet border from plan geometry.
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 from archiagent.classify.inventory import LayerStats
 from archiagent.classify.roles import Role
-
-# Bump on ANY change to the prompt text or the schema. The classification
-# cache key includes this, so a stale answer is never served for a new
-# prompt.
-PROMPT_VERSION = "1"
 
 SYSTEM_PROMPT = """\
 You classify CAD layers from a single architectural floorplan.
@@ -99,6 +95,21 @@ def response_schema() -> dict:
         "required": ["layers"],
         "additionalProperties": False,
     }
+
+
+PROMPT_VERSION = hashlib.sha256(
+    (SYSTEM_PROMPT + json.dumps(response_schema(), sort_keys=True))
+    .encode("utf-8")
+).hexdigest()[:12]
+"""Identity of the prompt, DERIVED from its content rather than declared.
+
+The classification cache key includes this so a stale answer is never
+served for a new prompt. As a hand-maintained constant that guarantee
+rested on a developer remembering to bump it -- and the failure mode is
+exactly the one it exists to prevent: edit the prompt to correct a
+misclassification, forget the bump, and every warm cache keeps serving the
+answer the edit was meant to fix. Deriving it makes forgetting impossible.
+"""
 
 
 def _row(s: LayerStats) -> str:

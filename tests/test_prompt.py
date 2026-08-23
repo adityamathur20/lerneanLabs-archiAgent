@@ -1,8 +1,9 @@
+import hashlib
 import json
 
 from archiagent.classify.inventory import LayerStats
-from archiagent.classify.prompt import (SYSTEM_PROMPT, build_user_prompt,
-                                        response_schema)
+from archiagent.classify.prompt import (PROMPT_VERSION, SYSTEM_PROMPT,
+                                        build_user_prompt, response_schema)
 from archiagent.classify.roles import Role
 
 
@@ -62,6 +63,21 @@ def test_user_prompt_renders_the_discriminating_numbers():
     assert "100" in row       # axis-aligned percent
     assert "23.2" in row      # median segment length
     assert "1024.5" in row    # bbox width
+
+
+def test_prompt_version_is_derived_from_the_prompt_and_the_schema():
+    """PROMPT_VERSION was a hand-maintained "1". The cache key includes it so
+    a stale answer is never served for a new prompt -- a guarantee that rested
+    entirely on a developer remembering to bump it. It is now a digest of the
+    content, so any edit to SYSTEM_PROMPT or the schema that fails to
+    propagate breaks this test instead of silently serving stale answers."""
+    expected = hashlib.sha256(
+        (SYSTEM_PROMPT + json.dumps(response_schema(), sort_keys=True))
+        .encode("utf-8")
+    ).hexdigest()[:12]
+    assert PROMPT_VERSION == expected
+    assert len(PROMPT_VERSION) == 12
+    assert all(c in "0123456789abcdef" for c in PROMPT_VERSION)
 
 
 def test_system_prompt_warns_that_hatch_is_not_a_wall():

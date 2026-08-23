@@ -1,9 +1,11 @@
+import json
+
 import pytest
 
 from archiagent.classify.cache import (CachingClassifier, cache_dir,
                                        inventory_key, read_cache, write_cache)
 from archiagent.classify.inventory import LayerStats
-from archiagent.classify.layers import LayerDecision, StubClassifier
+from archiagent.classify.layers import LayerDecision
 from archiagent.classify.roles import Role
 
 
@@ -86,7 +88,9 @@ def test_a_corrupt_entry_is_a_miss_not_a_crash(isolated_cache):
 
 
 def test_caching_classifier_calls_through_once_then_serves_the_cache():
-    decisions = (LayerDecision("a", Role.FURNITURE, 0.8, "short", "llm"),)
+    # The classification must contain a wall layer: a wall-less one is
+    # deliberately not persisted (see the sticky-failure test below).
+    decisions = (LayerDecision("a", Role.WALL_STRUCTURAL, 0.8, "long", "llm"),)
     inner = _CountingClassifier(decisions)
     stats = _stats("a")
 
@@ -106,3 +110,92 @@ def test_caching_classifier_disabled_always_calls_through():
     CachingClassifier(inner, model="m", enabled=False).classify(stats)
 
     assert inner.calls == 2
+
+
+def test_key_changes_when_the_provider_changes():
+    a = inventory_key(_stats("walll"), "m", provider="anthropic")
+    b = inventory_key(_stats("walll"), "m", provider="openai")
+    assert a != b
+
+
+def test_key_changes_when_the_base_url_changes():
+    """`--provider openai --model llama-3.3-70b` reaches Groq or DeepSeek
+    depending only on the base URL. Serving one endpoint's classification for
+    the other is silently wrong."""
+    a = inventory_key(_stats("walll"), "m", provider="openai",
+                      base_url="https://api.groq.com/openai/v1")
+    b = inventory_key(_stats("walll"), "m", provider="openai",
+                      base_url="https://api.deepseek.com")
+    assert a != b
+
+
+def test_key_rounding_is_at_least_as_fine_as_the_prompt_renders_it():
+    """The key's invariant: it may distinguish inventories the prompt renders
+    identically (a needless MISS -- safe), never the reverse (a false HIT
+    serving another drawing's answer -- unsafe). Two inventories that differ
+    only below the key's rounding must therefore render identically in the
+    prompt. This fails if anyone coarsens a key field or adds precision to
+    prompt._row."""
+    from archiagent.classify.prompt import _row
+
+    # Key rounds p50 to 3dp; _row prints it to 1dp. A difference at the 5th
+    # decimal is invisible to BOTH.
+    a, b = _stats("L", p50=23.20000)[0], _stats("L", p50=23.200004)[0]
+    assert inventory_key((a,), "m") == inventory_key((b,), "m")
+    assert _row(a) == _row(b)
+
+    # A difference the PROMPT can see must change the key.
+    c = _stats("L", p50=23.3)[0]
+    assert _row(a) != _row(c)
+    assert inventory_key((a,), "m") != inventory_key((c,), "m")
+
+
+def test_a_wall_less_classification_is_not_cached(isolated_cache):
+    """If every layer comes back ignore, extract() raises "no layers were
+    classified as walls". Persisting that makes the failure STICKY: the key
+    does not change when the user retries, so every later run reproduces it
+    without ever calling the model."""
+    decisions = (LayerDecision("a", Role.IGNORE, 0.0, "unanswered", "default"),)
+    inner = _CountingClassifier(decisions)
+    stats = _stats("a")
+
+    CachingClassifier(inner, model="m").classify(stats)
+    CachingClassifier(inner, model="m").classify(stats)
+
+    assert inner.calls == 2
+    assert list(isolated_cache.glob("*.json")) == []
+
+
+def test_a_cache_entry_with_a_bogus_source_is_a_miss(isolated_cache):
+    """`source` drives validate(): only "default" warns. A hand-edited "LLM"
+    or "model" would permanently silence layer_unclassified for that layer."""
+    isolated_cache.mkdir(parents=True, exist_ok=True)
+    (isolated_cache / "bogus.json").write_text(json.dumps([
+        {"layer": "a", "role": "wall_structural", "confidence": 0.9,
+         "reason": "", "source": "LLM"}]))
+    assert read_cache("bogus") is None
+
+
+def test_a_hit_naming_different_layers_than_the_drawing_is_a_miss(
+        isolated_cache):
+    """read_cache rebuilds each decision's layer from JSON, not from the
+    current stats, so a corrupt entry is the one route by which a layer name
+    absent from the drawing could reach layers_for_roles."""
+    stats = _stats("a")
+    key = inventory_key(stats, "m")
+    write_cache(key, (LayerDecision("GHOST", Role.WALL_STRUCTURAL, 0.9, "",
+                                    "llm"),))
+    inner = _CountingClassifier(
+        (LayerDecision("a", Role.WALL_STRUCTURAL, 0.9, "", "llm"),))
+
+    out = CachingClassifier(inner, model="m").classify(stats)
+
+    assert inner.calls == 1
+    assert [d.layer for d in out] == ["a"]
+
+
+def test_write_leaves_no_temporary_file_behind(isolated_cache):
+    """write_cache renames a .tmp into place so a crash mid-write cannot
+    leave a half-written entry under the real key."""
+    write_cache("k", (LayerDecision("a", Role.WALL_STRUCTURAL, 0.9, "", "llm"),))
+    assert [p.name for p in sorted(isolated_cache.iterdir())] == ["k.json"]

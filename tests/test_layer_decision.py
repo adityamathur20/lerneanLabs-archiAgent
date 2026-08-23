@@ -1,6 +1,9 @@
+import typing
+
 from archiagent.classify.inventory import LayerStats
-from archiagent.classify.layers import (WALL_ROLES, LayerDecision,
-                                        StubClassifier, layers_for_roles)
+from archiagent.classify.layers import (SOURCES, WALL_ROLES, LayerDecision,
+                                        Source, layers_for_roles,
+                                        StubClassifier)
 from archiagent.classify.roles import Role
 
 
@@ -19,6 +22,15 @@ def test_decision_defaults_reason_and_source():
     d = LayerDecision("WALLS", Role.WALL_STRUCTURAL, 0.9)
     assert d.reason == ""
     assert d.source == "llm"
+
+
+def test_source_is_a_closed_vocabulary():
+    """validate() warns on "default" and nothing else, so any unrecognised
+    source is a silent claim of provenance. The type is closed and SOURCES is
+    derived from it, so the two cannot drift apart."""
+    assert SOURCES == {"llm", "manual", "default"}
+    assert set(typing.get_args(Source)) == SOURCES
+    assert typing.get_type_hints(LayerDecision)["source"] is Source
 
 
 def test_stub_returns_decisions_in_inventory_order():

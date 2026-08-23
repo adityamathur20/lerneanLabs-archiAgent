@@ -7,10 +7,14 @@ sees LayerStats only — never coordinates, and it never returns any.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol, get_args
 
 from archiagent.classify.inventory import LayerStats
 from archiagent.classify.roles import Role
+
+Source = Literal["llm", "manual", "default"]
+
+SOURCES: frozenset[str] = frozenset(get_args(Source))
 
 
 @dataclass(frozen=True)
@@ -24,13 +28,17 @@ class LayerDecision:
                 walls is a deliberate statement that the rest are not
       "default" the model was ASKED about this layer and did not answer, so
                 IGNORE was applied. Only this value warrants a warning.
+
+    The type is closed deliberately: an unrecognised value would be read by
+    validate() as "not default", i.e. as a silent claim of provenance that
+    never warns. An omission should be conspicuous, not absorbed.
     """
 
     layer: str
     role: Role
     confidence: float
     reason: str = ""
-    source: str = "llm"
+    source: Source = "llm"
 
 
 Classification = tuple[LayerDecision, ...]
