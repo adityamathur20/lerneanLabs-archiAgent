@@ -121,3 +121,42 @@ def test_an_unexpected_sdk_exception_becomes_unavailable(monkeypatch):
     c, _ = _client_with(monkeypatch, raises=TypeError("bad response body"))
     with pytest.raises(LLMUnavailable, match="TypeError"):
         c.classify_json(system="s", user="u", schema=SCHEMA)
+
+
+def test_vision_request_sends_labelled_images_then_the_prompt_last(monkeypatch):
+    """Nothing else pins this wire shape: there are no credentials in this
+    environment, so a live call can never catch a malformed content array.
+    This unit test is the only protection that exists."""
+    import base64
+
+    c, captured = _client_with(monkeypatch, _Resp('{"layers": []}'))
+    c.classify_json_vision(
+        system="sys", user="usr", schema=SCHEMA,
+        images=[("reference", b"REFDATA"), ("layer WALLS", b"WALLDATA")],
+        max_tokens=1234)
+
+    assert captured["messages"][0] == {"role": "system", "content": "sys"}
+    content = captured["messages"][1]["content"]
+    ref_b64 = base64.b64encode(b"REFDATA").decode("ascii")
+    wall_b64 = base64.b64encode(b"WALLDATA").decode("ascii")
+    assert content == [
+        {"type": "text", "text": "reference"},
+        {"type": "image_url",
+         "image_url": {"url": f"data:image/png;base64,{ref_b64}"}},
+        {"type": "text", "text": "layer WALLS"},
+        {"type": "image_url",
+         "image_url": {"url": f"data:image/png;base64,{wall_b64}"}},
+        {"type": "text", "text": "usr"},
+    ]
+    assert captured["model"] == "llama-3.3-70b"
+    assert captured["max_tokens"] == 1234
+    assert captured["response_format"]["json_schema"]["strict"] is True
+
+
+def test_vision_request_maps_transport_errors_the_same_as_classify_json(monkeypatch):
+    import openai
+    boom = openai.APIConnectionError(request=None)
+    c, _ = _client_with(monkeypatch, raises=boom)
+    with pytest.raises(LLMUnavailable, match="OpenAI-compatible"):
+        c.classify_json_vision(system="s", user="u", schema=SCHEMA,
+                               images=[("reference", b"X")])

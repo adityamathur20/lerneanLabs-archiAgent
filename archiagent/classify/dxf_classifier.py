@@ -18,7 +18,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from archiagent.classify.escalate import select_for_escalation
+from archiagent.classify.escalate import (ESCALATION_CAP, escalation_candidates,
+                                          select_for_escalation)
 from archiagent.classify.inventory import LayerStats
 from archiagent.classify.layers import Classification
 from archiagent.classify.llm_classifier import decisions_from_reply
@@ -37,9 +38,12 @@ MAX_TOKENS = 2048
 
 # Where rendered layer thumbnails land when the caller does not specify a
 # cache_dir. Confidential client drawings, so this must never be under the
-# repo -- it lives beside the LLM decision cache, both under the user's
-# cache home.
-DEFAULT_CACHE_DIR = Path.home() / ".cache" / "archiagent" / "thumbnails"
+# repo, and it must not be a shared, cross-client bucket like the user's
+# home cache either -- a render is a pixel-perfect picture of one client's
+# building, not a small JSON role decision. .archiagent-cache/ is scoped to
+# the engagement, deletable with it, and already covered by this repo's
+# .gitignore.
+DEFAULT_CACHE_DIR = Path(".archiagent-cache") / "thumbnails"
 
 
 class DxfLayerClassifier:
@@ -68,9 +72,21 @@ class DxfLayerClassifier:
         )
         stage1 = decisions_from_reply(reply, stats)
 
+        uncapped = escalation_candidates(stage1, stats)
         candidates = select_for_escalation(stage1, stats)
         if not candidates:
             return stage1
+
+        # The cap keeps the vision call cheap, but a layer it drops must
+        # not fall through with zero signal in either mode -- it is exactly
+        # as untrustworthy as the six that survive the cap.
+        kept = {name for name, _ in candidates}
+        dropped = [c for c in uncapped if c[0] not in kept]
+        for layer, trigger in dropped:
+            self._report(
+                "warn", layer, "layer_escalation_skipped",
+                f"escalation trigger={trigger!r}: dropped by the escalation "
+                f"cap ({ESCALATION_CAP} candidates max)")
 
         if not self._vision:
             self._skip_all(candidates, "vision is off")
@@ -93,12 +109,21 @@ class DxfLayerClassifier:
             self._skip_all(candidates, f"render failed: {e}")
             return stage1
 
-        # A layer holding no entities is skipped by render_for_escalation
-        # and absent from layer_paths -- it never reaches the model.
+        # A layer holding no entities, or whose render raised, is skipped by
+        # render_for_escalation and absent from layer_paths -- it never
+        # reaches the model. That must be reported per layer, independent
+        # of whether any of the other candidates rendered successfully:
+        # missing one of three candidates is not "no renderable layers".
         rendered = [(name, trigger) for name, trigger in candidates
                    if name in layer_paths]
+        missing = [(name, trigger) for name, trigger in candidates
+                  if name not in layer_paths]
+        for layer, trigger in missing:
+            self._report(
+                "warn", layer, "layer_escalation_skipped",
+                f"escalation trigger={trigger!r}: layer render unavailable "
+                "(no entities, or the render failed)")
         if not rendered:
-            self._skip_all(candidates, "no renderable layers")
             return stage1
 
         try:
@@ -121,7 +146,11 @@ class DxfLayerClassifier:
             )
             stage2 = decisions_from_reply(reply2, escalated_stats)
         except Exception as e:  # noqa: BLE001 - any failure keeps stage 1
-            self._skip_all(candidates, f"stage 2 failed: {e}")
+            # Only the layers actually sent to stage 2 (`rendered`) get this
+            # Issue -- the ones missing a render already got a more precise
+            # reason above, and repeating this generic one for them would
+            # just be noise.
+            self._skip_all(rendered, f"stage 2 failed: {e}")
             return stage1
 
         # Only layers stage 2 actually answered (source == "llm") splice

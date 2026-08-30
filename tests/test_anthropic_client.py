@@ -121,3 +121,44 @@ def test_an_unexpected_sdk_exception_becomes_unavailable(monkeypatch):
     c, _ = _client_with(monkeypatch, raises=TypeError("bad response body"))
     with pytest.raises(LLMUnavailable, match="TypeError"):
         c.classify_json(system="s", user="u", schema=SCHEMA)
+
+
+def test_vision_request_sends_labelled_images_then_the_prompt_last(monkeypatch):
+    """Nothing else pins this wire shape: there are no credentials in this
+    environment, so a live call can never catch a malformed content array.
+    This unit test is the only protection that exists."""
+    import base64
+
+    c, captured = _client_with(monkeypatch, _Resp('{"layers": []}'))
+    c.classify_json_vision(
+        system="sys", user="usr", schema=SCHEMA,
+        images=[("reference", b"REFDATA"), ("layer WALLS", b"WALLDATA")],
+        max_tokens=1234)
+
+    assert len(captured["messages"]) == 1
+    message = captured["messages"][0]
+    assert message["role"] == "user"
+    assert message["content"] == [
+        {"type": "text", "text": "reference"},
+        {"type": "image",
+         "source": {"type": "base64", "media_type": "image/png",
+                    "data": base64.b64encode(b"REFDATA").decode("ascii")}},
+        {"type": "text", "text": "layer WALLS"},
+        {"type": "image",
+         "source": {"type": "base64", "media_type": "image/png",
+                    "data": base64.b64encode(b"WALLDATA").decode("ascii")}},
+        {"type": "text", "text": "usr"},
+    ]
+    assert captured["system"] == "sys"
+    assert captured["max_tokens"] == 1234
+    assert captured["output_config"] == {
+        "format": {"type": "json_schema", "schema": SCHEMA}}
+
+
+def test_vision_request_maps_transport_errors_the_same_as_classify_json(monkeypatch):
+    import anthropic
+    boom = anthropic.APIConnectionError(request=None)
+    c, _ = _client_with(monkeypatch, raises=boom)
+    with pytest.raises(LLMUnavailable, match="Anthropic"):
+        c.classify_json_vision(system="s", user="u", schema=SCHEMA,
+                               images=[("reference", b"X")])
