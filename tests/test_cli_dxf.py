@@ -3,13 +3,13 @@ import pytest
 from archiagent.cli import EXIT_OK, EXIT_PIPELINE, EXIT_USAGE, main
 
 
-def _dxf(tmp_path, insunits=1):
+def _dxf(tmp_path, insunits=1, name="t.dxf"):
     doc = ezdxf.new()
     doc.header["$INSUNITS"] = insunits
     msp = doc.modelspace()
     for y in (0, 96):                       # two faces 8in apart -> one wall
         msp.add_line((0, y), (240, y), dxfattribs={"layer": "WALLS"})
-    p = tmp_path / "t.dxf"
+    p = tmp_path / name
     doc.saveas(p)
     return p
 
@@ -20,7 +20,8 @@ def test_neither_input_is_a_usage_error(capsys):
 
 def test_both_inputs_is_a_usage_error(tmp_path, capsys):
     d = _dxf(tmp_path)
-    rc = main(["some.pdf", "--dxfFilePath", str(d), str(tmp_path / "o.ifc")])
+    rc = main(["--pdfFilePath", "some.pdf", "--dxfFilePath", str(d),
+               "--outputDir", str(tmp_path / "out")])
     assert rc == EXIT_USAGE
     assert "one of" in capsys.readouterr().err.lower()
 
@@ -33,9 +34,10 @@ def test_dxf_inspect_lists_layers(tmp_path, capsys):
 
 def test_dxf_walls_override_builds_an_ifc(tmp_path):
     d = _dxf(tmp_path)
-    out = tmp_path / "o.ifc"
-    assert main(["--dxfFilePath", str(d), str(out), "--walls", "WALLS"]) == EXIT_OK
-    assert out.exists()
+    out_dir = tmp_path / "out"
+    assert main(["--dxfFilePath", str(d), "--outputDir", str(out_dir),
+                "--walls", "WALLS"]) == EXIT_OK
+    assert (out_dir / "t.ifc").exists()
 
 
 def test_units_per_foot_overrides_the_header(tmp_path, capsys):
@@ -44,28 +46,139 @@ def test_units_per_foot_overrides_the_header(tmp_path, capsys):
                  "--units-per-foot", "12"]) == EXIT_OK
 
 
-def test_vision_flag_is_off_by_default(tmp_path, monkeypatch):
-    """ARCHIAGENT_VISION unset and no --vision means stage 1 only."""
+def test_vision_is_on_by_default(monkeypatch):
+    """Vision is ON by default -- the user must be able to get stage 2
+    escalation with no flags at all."""
     monkeypatch.delenv("ARCHIAGENT_VISION", raising=False)
     from archiagent.cli import _vision_enabled
-    assert _vision_enabled(vision_flag=False) is False
+    assert _vision_enabled(no_vision_flag=False) is True
 
 
-def test_vision_env_var_enables_it(tmp_path, monkeypatch):
-    monkeypatch.setenv("ARCHIAGENT_VISION", "1")
+def test_no_vision_flag_disables_it(monkeypatch):
+    monkeypatch.delenv("ARCHIAGENT_VISION", raising=False)
     from archiagent.cli import _vision_enabled
-    assert _vision_enabled(vision_flag=False) is True
+    assert _vision_enabled(no_vision_flag=True) is False
 
 
-def test_explicit_flag_wins_over_the_env_var(tmp_path, monkeypatch):
+def test_vision_env_var_zero_disables_it(monkeypatch):
     monkeypatch.setenv("ARCHIAGENT_VISION", "0")
     from archiagent.cli import _vision_enabled
-    assert _vision_enabled(vision_flag=True) is True
+    assert _vision_enabled(no_vision_flag=False) is False
+
+
+def test_explicit_no_vision_flag_wins_over_the_env_var(monkeypatch):
+    monkeypatch.setenv("ARCHIAGENT_VISION", "1")
+    from archiagent.cli import _vision_enabled
+    assert _vision_enabled(no_vision_flag=True) is False
 
 
 def test_a_bad_dxf_wall_name_is_caught(tmp_path, capsys):
     d = _dxf(tmp_path)
-    rc = main(["--dxfFilePath", str(d), str(tmp_path / "o.ifc"),
+    rc = main(["--dxfFilePath", str(d), "--outputDir", str(tmp_path / "out"),
                "--walls", "NOPE"])
     assert rc == EXIT_USAGE
     assert "NOPE" in capsys.readouterr().err
+
+
+def test_help_states_vision_is_on_by_default(capsys):
+    """The user must never be surprised that DXF layer renders are sent to
+    the LLM provider by default -- --help has to say so plainly."""
+    assert main(["--help"]) == EXIT_OK
+    out = " ".join(capsys.readouterr().out.split())  # normalize wrapping
+    assert "--no_vision" in out
+    assert "sent to the configured llm provider" in out.lower()
+
+
+# --- Critical finding: the CLI used to overwrite input files -------------
+#
+# `archiagent myplan.pdf --dxfFilePath drawing.dxf --walls WALLS` used to
+# reach main() with pdf="myplan.pdf" (argparse's greedy nargs="?" matching
+# put the stray positional there) and out_ifc=None. main()'s own
+# reinterpretation step then read "no OUT_IFC yet, but --dxfFilePath IS
+# set, and pdf holds one token" as "that token must actually be OUT_IFC",
+# reassigned it, and authored the IFC straight over myplan.pdf -- at exit
+# 0, no warning. Positionals are gone now: there is no slot left for
+# argparse, or main(), to misassign a stray token into.
+
+def test_the_reported_overwrite_bug_is_now_a_usage_error(tmp_path, capsys):
+    """Regression for the Critical finding, reproduced with a real DXF so
+    the drawing side of the command is otherwise completely valid."""
+    d = _dxf(tmp_path)
+    victim = tmp_path / "myplan.pdf"
+    original = b"33 bytes of totally real pdf text"
+    victim.write_bytes(original)
+
+    code = main([str(victim), "--dxfFilePath", str(d), "--walls", "WALLS"])
+
+    assert code == EXIT_USAGE
+    assert victim.read_bytes() == original
+
+
+def test_outputdir_refuses_to_overwrite_an_existing_output_file(tmp_path):
+    """Same family of mistake as the overwrite bug: a previous run's
+    output in the same --outputDir must not be silently clobbered."""
+    d = _dxf(tmp_path)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    existing = out_dir / "t.ifc"
+    original = b"a previous run's real output"
+    existing.write_bytes(original)
+
+    code = main(["--dxfFilePath", str(d), "--outputDir", str(out_dir),
+                 "--walls", "WALLS"])
+
+    assert code == EXIT_USAGE
+    assert existing.read_bytes() == original
+
+
+def test_outputdir_is_created_if_missing(tmp_path):
+    d = _dxf(tmp_path)
+    out_dir = tmp_path / "does" / "not" / "exist" / "yet"
+    assert not out_dir.exists()
+
+    code = main(["--dxfFilePath", str(d), "--outputDir", str(out_dir),
+                 "--walls", "WALLS"])
+
+    assert code == EXIT_OK
+    assert (out_dir / "t.ifc").exists()
+
+
+# --- classifier-reported issues must reach CLI output ---------------------
+
+class _FakeClient:
+    """Stands in for a real LLMClient -- no credentials, no network."""
+
+    def __init__(self, reply):
+        self._reply = reply
+
+    def classify_json(self, **kw):
+        return self._reply
+
+    def classify_json_vision(self, **kw):  # pragma: no cover
+        raise AssertionError("vision must not be called when --no_vision "
+                             "is set")
+
+
+def test_classifier_reported_issues_reach_cli_output(tmp_path, monkeypatch,
+                                                      capsys):
+    """DxfLayerClassifier reports layer_escalation_skipped /
+    layer_role_revised via its on_issue callback. cli.py used to build it
+    with no on_issue= at all, so these were computed and silently
+    discarded -- validate(model) has no side-channel for them. A
+    low-confidence stage-1 answer with vision off must trigger escalation,
+    get skipped for "vision is off", and that Issue must show up under -v.
+    """
+    d = _dxf(tmp_path)
+    reply = {"layers": [{"name": "WALLS", "role": "wall_structural",
+                         "confidence": 0.5, "reason": "unsure"}]}
+    monkeypatch.setattr("archiagent.cli.build_client",
+                        lambda cfg: _FakeClient(reply))
+
+    out_dir = tmp_path / "out"
+    code = main(["--dxfFilePath", str(d), "--outputDir", str(out_dir),
+                 "--no_vision", "--no-cache", "-v"])
+
+    assert code == EXIT_OK
+    err = capsys.readouterr().err
+    assert "layer_escalation_skipped" in err
+    assert "WALLS" in err

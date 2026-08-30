@@ -1,4 +1,4 @@
-"""`python -m archiagent plan.pdf out.ifc` -- the tool surface.
+"""`archiagent --pdfFilePath plan.pdf --outputDir out/` -- the tool surface.
 
 Three modes:
   --inspect        print the layer inventory and stop. No LLM, no output file.
@@ -8,6 +8,21 @@ Three modes:
 --inspect and --walls exist so the tool stays usable with no credentials and
 no network. --inspect is also how you find out what a drawing contains
 before spending a call on it.
+
+Every input and output is a NAMED flag, not a positional. A previous
+revision took the input as a bare positional plus a positional OUT_IFC, and
+argparse could not always tell `PDF --dxfFilePath X` (an error: both given)
+apart from `--dxfFilePath X OUT_IFC` (valid) -- both parse to one leftover
+positional token. The tool guessed it was OUT_IFC and wrote the authored
+IFC over the user's own input file, at exit 0. Named flags remove the
+ambiguity outright: --outputDir names a DIRECTORY the tool writes into
+under a filename it derives itself, so no flag value the user supplies can
+ever be mistaken for a destination to overwrite.
+
+VISION IS ON BY DEFAULT for DXF drawings: low-confidence layers get a
+second look via rendered images sent to the configured LLM provider (the
+vision / stage 2 escalation). Pass --no_vision to keep every call
+text-only, or set ARCHIAGENT_VISION=0.
 """
 
 from __future__ import annotations
@@ -17,6 +32,7 @@ import collections
 import os
 import shlex
 import sys
+from pathlib import Path
 
 from archiagent.classify.cache import CachingClassifier
 from archiagent.classify.dxf_classifier import DxfLayerClassifier
@@ -31,6 +47,7 @@ from archiagent.ingest.dxf_vector import DxfUnitsError, load_dxf
 from archiagent.ingest.pdf_vector import NoLayersError, load_pdf
 from archiagent.llm.client import LLMSchemaError, LLMUnavailable
 from archiagent.llm.config import build_client, config_from_env
+from archiagent.model import Issue
 from archiagent.pipeline import extract_from_dxf, extract_from_primitives
 from archiagent.scale.resolve import ScaleGateError
 
@@ -45,22 +62,31 @@ MANUAL_WALL_CONFIDENCE = 1.0
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="archiagent",
-        description="Turn a layered 2D floorplan PDF into a to-scale IFC4 model.")
-    # nargs="?": exactly one of PDF or --dxfFilePath is required, but that
-    # is a relationship between two arguments argparse cannot express by
-    # itself (a mutually-exclusive group can't also let OUT_IFC stay
-    # optional the way it needs to), so both are individually optional here
-    # and main() validates the "exactly one" rule itself.
-    p.add_argument("pdf", metavar="PDF", nargs="?", default=None,
+        description=(
+            "Turn a layered 2D floorplan (PDF or DXF) into a to-scale IFC4 "
+            "model. Exactly one of --pdfFilePath or --dxfFilePath is "
+            "required. By default, rendered images of DXF layers ARE SENT "
+            "to the configured LLM provider for a second look at "
+            "low-confidence layers (the vision stage). Pass --no_vision to "
+            "keep every call text-only."))
+    p.add_argument("--pdfFilePath", dest="pdfFilePath", metavar="PATH",
+                   default=None,
                    help="input floorplan PDF (mutually exclusive with "
-                        "--dxfFilePath)")
-    p.add_argument("out_ifc", metavar="OUT_IFC", nargs="?",
-                   help="output .ifc path (not needed with --inspect or "
-                        "--classify-only)")
+                        "--dxfFilePath; exactly one is required)")
     p.add_argument("--dxfFilePath", dest="dxfFilePath", metavar="PATH",
                    default=None,
-                   help="input floorplan DXF (mutually exclusive with PDF)")
-    p.add_argument("--page", type=int, default=0, help="page index (default 0)")
+                   help="input floorplan DXF (mutually exclusive with "
+                        "--pdfFilePath; exactly one is required)")
+    p.add_argument("--outputDir", dest="outputDir", metavar="DIR",
+                   default=None,
+                   help="directory to write the .ifc into (required unless "
+                        "--inspect or --classify-only is given). The "
+                        "filename is derived from the input's own name "
+                        "(plan.pdf -> plan.ifc, drawing.dxf -> "
+                        "drawing.ifc). Created if it does not exist; the "
+                        "run refuses to overwrite an existing output file.")
+    p.add_argument("--page", type=int, default=0,
+                   help="PDF only: page index (default 0)")
     p.add_argument("--height", type=float, default=10.0,
                    metavar="FT", help="wall height in feet (default 10.0)")
     p.add_argument("--walls", nargs="+", metavar="NAME", default=None,
@@ -69,9 +95,13 @@ def _parser() -> argparse.ArgumentParser:
                    help="override ARCHIAGENT_LLM_PROVIDER")
     p.add_argument("--model", default=None,
                    help="override ARCHIAGENT_LLM_MODEL")
-    p.add_argument("--vision", action="store_true",
-                   help="DXF only: allow stage 2 (image) escalation; "
-                        "otherwise ARCHIAGENT_VISION decides")
+    p.add_argument("--no_vision", action="store_true",
+                   help="DXF only: disable stage 2 (image) escalation. "
+                        "Without this flag, rendered images of "
+                        "low-confidence layers ARE SENT to the configured "
+                        "LLM provider by default -- ARCHIAGENT_VISION=0 "
+                        "has the same effect as this flag, but this flag "
+                        "wins if both are given.")
     p.add_argument("--units-per-foot", type=float, default=None,
                    metavar="FLOAT",
                    help="DXF only: override the drawing's declared units "
@@ -145,22 +175,27 @@ def _classifier(args) -> LayerClassifier:
                              base_url=cfg.base_url, enabled=not args.no_cache)
 
 
-def _vision_enabled(vision_flag: bool) -> bool:
-    """The explicit --vision flag wins; otherwise ARCHIAGENT_VISION decides.
+def _vision_enabled(no_vision_flag: bool) -> bool:
+    """Vision is ON BY DEFAULT. --no_vision forces it off; so does
+    ARCHIAGENT_VISION=0. The explicit flag wins over the environment
+    variable.
 
     A module-level function, not folded into arg parsing, because tests
     call it directly rather than driving it through argv.
     """
-    if vision_flag:
-        return True
-    return os.environ.get("ARCHIAGENT_VISION", "") not in ("", "0")
+    if no_vision_flag:
+        return False
+    return os.environ.get("ARCHIAGENT_VISION", "1") != "0"
 
 
-def _dxf_classifier(args, dxf_path: str) -> LayerClassifier:
+def _dxf_classifier(args, dxf_path: str, on_issue=None) -> LayerClassifier:
     """Manual map, or the DXF two-stage classifier behind the cache.
 
     Mirrors `_classifier`, swapping LLMLayerClassifier (text-only, PDF
     prompt) for DxfLayerClassifier (DXF prompt, optional vision escalation).
+    `on_issue` is threaded straight through to DxfLayerClassifier so
+    escalation diagnostics (layer_escalation_skipped, layer_role_revised)
+    reach the caller instead of being silently discarded.
     Raises LLMUnavailable, which main() maps to EXIT_LLM.
     """
     if args.walls:
@@ -170,7 +205,8 @@ def _dxf_classifier(args, dxf_path: str) -> LayerClassifier:
 
     cfg = config_from_env(provider=args.provider, model=args.model)
     inner = DxfLayerClassifier(build_client(cfg), dxf_path,
-                               vision=_vision_enabled(args.vision))
+                               vision=_vision_enabled(args.no_vision),
+                               on_issue=on_issue)
     return CachingClassifier(inner, model=cfg.model, provider=cfg.provider,
                              base_url=cfg.base_url, enabled=not args.no_cache)
 
@@ -216,63 +252,53 @@ def main(argv: list[str] | None = None) -> int:
         # `archiagent --help` install check.
         return EXIT_OK if not e.code else EXIT_USAGE
 
-    # argparse fills two nargs="?" positionals greedily left-to-right: a
-    # single leftover positional token lands in `pdf` first, even when
-    # --dxfFilePath was given and `pdf` was never meant to receive
-    # anything -- that token was OUT_IFC, typed positionally alongside
-    # --dxfFilePath. Recognize exactly that shape and shift it over before
-    # the exclusivity check below can misread it as "both PDF and
-    # --dxfFilePath given".
-    if args.dxfFilePath and args.pdf and not args.out_ifc:
-        args.out_ifc = args.pdf
-        args.pdf = None
-
-    # Exactly one of {positional PDF, --dxfFilePath}. A mutually-exclusive
-    # group can't express this: OUT_IFC's own optionality (nargs="?") needs
-    # PDF to stay nargs="?" too, so the "exactly one" rule is checked here
-    # instead. Neither and both are both EXIT_USAGE, and the message names
-    # both options so the user sees the choice either way.
-    have_pdf = bool(args.pdf)
+    # Exactly one of --pdfFilePath / --dxfFilePath. Both are ordinary named
+    # flags, so there is no positional-matching ambiguity for argparse to
+    # get wrong (see the module docstring for the bug this replaced).
+    # Neither and both are both EXIT_USAGE, and the message names both
+    # options so the user sees the choice either way.
+    have_pdf = bool(args.pdfFilePath)
     have_dxf = bool(args.dxfFilePath)
     if have_pdf == have_dxf:
-        print("error: pass exactly one of PDF or --dxfFilePath",
+        print("error: pass exactly one of --pdfFilePath or --dxfFilePath",
               file=sys.stderr)
         return EXIT_USAGE
     is_dxf = have_dxf
-    input_path = args.dxfFilePath if is_dxf else args.pdf
+    input_path = args.dxfFilePath if is_dxf else args.pdfFilePath
 
     authoring = not (args.inspect or args.classify_only)
-    if authoring and not args.out_ifc:
-        print("error: OUT_IFC is required unless --inspect or "
-              "--classify-only is given", file=sys.stderr)
-        if args.walls:
-            # --walls is nargs="+" and OUT_IFC is nargs="?", so if OUT_IFC
-            # comes AFTER --walls on the command line, argparse resolves
-            # OUT_IFC to nothing and --walls eats everything that follows
-            # it -- including what was meant as the output path. Name that
-            # explicitly rather than leaving the user staring at a command
-            # line where they plainly did supply OUT_IFC.
-            print("note: --walls consumes every argument after it, so "
-                  "OUT_IFC must come first.", file=sys.stderr)
-            last = args.walls[-1]
-            if last.endswith(".ifc"):
-                remaining = " ".join(args.walls[:-1])
-                print(f"      {last!r} was read as a layer name -- did "
-                      f"you mean:", file=sys.stderr)
-                suggestion = f"python -m archiagent PDF {last}"
-                if remaining:
-                    suggestion += f" --walls {remaining}"
-                print(f"      {suggestion}", file=sys.stderr)
-        return EXIT_USAGE
+    out_path: Path | None = None
+    if authoring:
+        if not args.outputDir:
+            print("error: --outputDir is required unless --inspect or "
+                  "--classify-only is given", file=sys.stderr)
+            return EXIT_USAGE
+        # The filename is derived from the INPUT's own stem, never taken
+        # from a flag the caller could point anywhere -- that is the
+        # structural fix for the overwrite bug: the tool names its own
+        # output, and can only write inside a directory the caller chose.
+        out_path = Path(args.outputDir) / f"{Path(input_path).stem}.ifc"
+        if out_path.exists():
+            print(f"error: {out_path} already exists; refusing to "
+                  "overwrite it", file=sys.stderr)
+            print("hint: choose a different --outputDir, or remove the "
+                  "existing file first.", file=sys.stderr)
+            return EXIT_USAGE
 
     # The classifier is built BEFORE the drawing is read, so a bad provider
     # or a missing key fails fast with EXIT_LLM instead of after a slow
-    # parse.
+    # parse. classifier_issues collects DxfLayerClassifier's escalation
+    # diagnostics (layer_escalation_skipped, layer_role_revised) so they
+    # can be printed alongside the run's other issues instead of vanishing
+    # -- BuildingModel.issues comes entirely from validate(model), which has
+    # no side-channel for issues raised during classification.
+    classifier_issues: list[Issue] = []
     classifier: LayerClassifier | None = None
     if not args.inspect:
         try:
-            classifier = (_dxf_classifier(args, input_path) if is_dxf
-                         else _classifier(args))
+            classifier = (_dxf_classifier(args, input_path,
+                                          on_issue=classifier_issues.append)
+                         if is_dxf else _classifier(args))
         except LLMUnavailable as e:
             print(f"error: {e}", file=sys.stderr)
             return EXIT_LLM
@@ -307,15 +333,17 @@ def main(argv: list[str] | None = None) -> int:
                       file=sys.stderr)
                 # Real drawing filenames contain spaces, so quote the path:
                 # the hint has to be runnable as printed.
-                inspect_cmd = (f"--dxfFilePath {shlex.quote(input_path)}"
-                               if is_dxf else shlex.quote(input_path))
-                print(f"hint: run `python -m archiagent {inspect_cmd} "
-                      "--inspect` to see the drawing's real layer names "
-                      "(they are case-sensitive).", file=sys.stderr)
+                flag = "--dxfFilePath" if is_dxf else "--pdfFilePath"
+                print(f"hint: run `python -m archiagent {flag} "
+                      f"{shlex.quote(input_path)} --inspect` to see the "
+                      "drawing's real layer names (they are case-sensitive).",
+                      file=sys.stderr)
                 return EXIT_USAGE
 
         if args.classify_only:
             _print_decisions(classifier.classify(stats))
+            if args.verbose and classifier_issues:
+                _print_issues(tuple(classifier_issues))
             return EXIT_OK
 
         if is_dxf:
@@ -338,9 +366,10 @@ def main(argv: list[str] | None = None) -> int:
         # own handler is nested because the outer one blames the INPUT
         # path, and a failed write is not a failed read.
         try:
-            out = author_ifc(model, args.out_ifc)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out = author_ifc(model, out_path)
         except (OSError, RuntimeError) as e:
-            print(f"error: could not write {args.out_ifc}: {e}",
+            print(f"error: could not write {out_path}: {e}",
                   file=sys.stderr)
             return EXIT_PIPELINE
     except (LLMUnavailable, LLMSchemaError) as e:
@@ -378,7 +407,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: could not read {input_path}: {e}", file=sys.stderr)
         return EXIT_PIPELINE
 
-    counts = collections.Counter(i.severity for i in model.issues)
+    all_issues = model.issues + tuple(classifier_issues)
+    counts = collections.Counter(i.severity for i in all_issues)
     print(f"wrote {out}")
     print(f"  scale   {model.scale.units_per_foot:.4f} units/ft, "
           f"max residual {model.scale.max_residual_in:.3f}in")
@@ -388,7 +418,7 @@ def main(argv: list[str] | None = None) -> int:
           f"{'' if args.verbose else '  (-v to list)'}")
 
     if args.verbose:
-        _print_issues(model.issues)
+        _print_issues(all_issues)
 
     # Exit status tracks the R1 gate ALONE. A real drawing routinely carries
     # dozens of unresolved_junction errors -- the demolition plan has 42 --
