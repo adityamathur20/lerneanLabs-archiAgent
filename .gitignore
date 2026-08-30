@@ -10,3 +10,14 @@ venv/
 *.dwg
 *.dxf
 input-floorplans/
+
+# Generated models and renders — derived from client drawings, NEVER commit
+*.ifc
+.archiagent-cache/
+
+# graphify knowledge-graph output (regenerable, ~1MB)
+graphify-out/
+
+# Secrets
+.env
+.env.*
