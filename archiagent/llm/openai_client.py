@@ -12,6 +12,7 @@ validates the reply again on our side regardless of provider.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 
@@ -51,14 +52,44 @@ class OpenAICompatClient:
 
     def classify_json(self, *, system: str, user: str, schema: dict,
                       max_tokens: int = 2048) -> dict:
+        return self._request(
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            schema=schema, max_tokens=max_tokens)
+
+    def classify_json_vision(self, *, system: str, user: str, schema: dict,
+                             images: list[tuple[str, bytes]],
+                             max_tokens: int = 2048) -> dict:
+        # A layer only means something relative to the drawing it belongs
+        # to, so each image is labelled and the caller's ordering -- the
+        # reference render first, then each escalated layer -- is preserved
+        # exactly. The user prompt comes last.
+        content: list[dict] = []
+        for label, png_bytes in images:
+            content.append({"type": "text", "text": label})
+            b64 = base64.b64encode(png_bytes).decode("ascii")
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{b64}"},
+            })
+        content.append({"type": "text", "text": user})
+
+        return self._request(
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": content},
+            ],
+            schema=schema, max_tokens=max_tokens)
+
+    def _request(self, *, messages: list[dict], schema: dict,
+                max_tokens: int) -> dict:
         try:
             resp = self._client.chat.completions.create(
                 model=self._model,
                 max_tokens=max_tokens,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
+                messages=messages,
                 response_format={
                     "type": "json_schema",
                     "json_schema": {

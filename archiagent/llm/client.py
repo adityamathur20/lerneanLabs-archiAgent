@@ -30,10 +30,29 @@ class LLMSchemaError(RuntimeError):
     """
 
 
+class VisionUnsupported(RuntimeError):
+    """This client cannot accept images."""
+
+
 class LLMClient(Protocol):
     def classify_json(self, *, system: str, user: str, schema: dict,
                       max_tokens: int = 2048) -> dict:
         """Return a JSON object conforming to `schema`.
+
+        Raises LLMUnavailable on transport, auth or quota failure.
+        Raises LLMSchemaError if the provider returns something the schema
+        rejects, including a reply truncated by max_tokens.
+        """
+        ...
+
+    def classify_json_vision(self, *, system: str, user: str, schema: dict,
+                             images: list[tuple[str, bytes]],
+                             max_tokens: int = 2048) -> dict:
+        """Like `classify_json`, but with images attached to the request.
+
+        `images` is a list of (label, png_bytes) pairs; the caller controls
+        ordering -- typically a reference render of the whole drawing first,
+        then one render per layer under scrutiny.
 
         Raises LLMUnavailable on transport, auth or quota failure.
         Raises LLMSchemaError if the provider returns something the schema

@@ -43,6 +43,13 @@ def decisions_from_reply(reply: dict,
         name = entry.get("name")
         if not isinstance(name, str):
             raise LLMSchemaError(f"layer entry has no string name: {entry!r}")
+        # Our prompt JSON-quotes layer names so that names with spaces are
+        # unambiguous. Some models echo those quotes back inside the value.
+        # Matching is exact against the inventory, so an echoed quote would
+        # silently default EVERY layer to ignore.
+        name = name.strip()
+        if len(name) >= 2 and name[0] == name[-1] and name[0] in ('"', "'"):
+            name = name[1:-1]
 
         raw_role = entry.get("role")
         try:

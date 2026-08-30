@@ -7,6 +7,7 @@ keep working in an install without the `llm` extra.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 
@@ -47,12 +48,42 @@ class AnthropicClient:
 
     def classify_json(self, *, system: str, user: str, schema: dict,
                       max_tokens: int = 2048) -> dict:
+        return self._request(
+            messages=[{"role": "user", "content": user}],
+            system=system, schema=schema, max_tokens=max_tokens)
+
+    def classify_json_vision(self, *, system: str, user: str, schema: dict,
+                             images: list[tuple[str, bytes]],
+                             max_tokens: int = 2048) -> dict:
+        # A layer only means something relative to the drawing it belongs
+        # to, so each image is labelled and the caller's ordering -- the
+        # reference render first, then each escalated layer -- is preserved
+        # exactly. The user prompt comes last.
+        content: list[dict] = []
+        for label, png_bytes in images:
+            content.append({"type": "text", "text": label})
+            content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": base64.b64encode(png_bytes).decode("ascii"),
+                },
+            })
+        content.append({"type": "text", "text": user})
+
+        return self._request(
+            messages=[{"role": "user", "content": content}],
+            system=system, schema=schema, max_tokens=max_tokens)
+
+    def _request(self, *, messages: list[dict], system: str, schema: dict,
+                max_tokens: int) -> dict:
         try:
             resp = self._client.messages.create(
                 model=self._model,
                 max_tokens=max_tokens,
                 system=system,
-                messages=[{"role": "user", "content": user}],
+                messages=messages,
                 output_config={"format": {"type": "json_schema",
                                           "schema": schema}},
             )
