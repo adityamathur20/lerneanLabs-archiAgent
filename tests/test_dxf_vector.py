@@ -56,3 +56,27 @@ def test_explicit_units_override_the_header(tmp_path):
     _doc(insunits=2).saveas(p)          # header claims feet
     _, upf = load_dxf(p, units_per_foot=12.0)
     assert upf == 12.0                   # caller wins
+
+
+def test_mtext_with_formatting_codes_strips_to_plain_text(tmp_path):
+    """MTEXT with inline formatting codes must yield clean text."""
+    p = tmp_path / "t.dxf"
+    doc = ezdxf.new()
+    doc.header["$INSUNITS"] = 1
+    msp = doc.modelspace()
+    # Add MTEXT with font formatting codes (matches real DXF format)
+    mtext = msp.add_mtext(r"{\fArial|b0|i0|c0;33'-6\"}")
+    mtext.dxf.layer = "DIMS"
+    mtext.set_location((10, 20))
+    doc.saveas(p)
+
+    ps, _ = load_dxf(p)
+    # Assert the clean text is present (without formatting codes)
+    dims = [t for t in ps.texts if t.layer == "DIMS"]
+    assert len(dims) == 1
+    # The important part: formatting codes like {\fArial|b0|i0|c0; are stripped
+    assert "{\\" not in dims[0].text
+    assert "|" not in dims[0].text
+    # Dimension value is readable (with plain_text, not raw)
+    assert "33" in dims[0].text
+    assert "6" in dims[0].text

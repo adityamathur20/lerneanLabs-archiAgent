@@ -75,7 +75,7 @@ def load_dxf(path: str | Path,
             prims.append(Primitive("rect" if e.closed else "line",
                                    pts, layer, None, None))
         elif t in ("MTEXT", "TEXT"):
-            s = e.text if t == "MTEXT" else e.dxf.text
+            s = e.plain_text() if t == "MTEXT" else e.dxf.text
             ip = e.dxf.insert
             x, y = float(ip.x), float(ip.y)
             texts.append(TextItem(str(s), (x, y, x, y), layer))
