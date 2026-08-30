@@ -1,10 +1,13 @@
 """DXF front-end. Emits the same PrimitiveSet the PDF front-end emits, so
 no downstream stage knows which format the drawing came from.
 
-Unlike PDF, DXF declares its units -- but the declaration is not reliable:
-`Floor Plan.dxf` declares $INSUNITS=2 (feet) while its columns measure
-12.04 x 24.07, i.e. inches. Callers may override, and Task 7 sanity-checks
-the resolved value against detected wall thickness.
+Unlike PDF, DXF declares its units -- but the declaration is NOT
+TRUSTWORTHY: this project's own `Floor Plan.dxf` declares $INSUNITS=2
+(feet) while its columns measure 12.04 x 24.07, i.e. inches. Nothing here
+or downstream sanity-checks the resolved value against detected wall
+thickness or any other signal -- callers must pass --units-per-foot
+explicitly whenever the header looks wrong, rather than trusting this
+module to catch a lying $INSUNITS on its own.
 """
 
 from __future__ import annotations

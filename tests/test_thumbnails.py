@@ -114,6 +114,39 @@ def test_render_unavailable_propagates(tmp_path, monkeypatch):
         render_for_escalation(p, ["WALL"], tmp_path / "cache")
 
 
+def _doc_with_confusable_layers(tmp_path):
+    """Two layer names that sanitise to the identical stem under the old
+    `_safe()`: a space versus an underscore, an ordinary real-world naming
+    inconsistency."""
+    doc = ezdxf.new()
+    doc.header["$INSUNITS"] = 1
+    doc.layers.add("NEW WALLS", color=7)
+    doc.layers.add("NEW_WALLS", color=1)
+    msp = doc.modelspace()
+    for i in range(10):
+        msp.add_line((0, i * 5), (200, i * 5), dxfattribs={"layer": "NEW WALLS"})
+    for i in range(10):
+        msp.add_line((0, i * 5 + 2), (80, i * 5 + 2), dxfattribs={"layer": "NEW_WALLS"})
+    p = tmp_path / "confusable.dxf"
+    doc.saveas(p)
+    return p
+
+
+def test_confusable_layer_names_do_not_collide_on_disk(tmp_path):
+    """"NEW WALLS" and "NEW_WALLS" must never clobber each other's render --
+    that would silently send the classifier the same image twice, captioned
+    as two different layers."""
+    p = _doc_with_confusable_layers(tmp_path)
+    ref, per_layer = render_for_escalation(
+        p, ["NEW WALLS", "NEW_WALLS"], tmp_path / "cache")
+
+    assert set(per_layer) == {"NEW WALLS", "NEW_WALLS"}
+    path_a, path_b = per_layer["NEW WALLS"], per_layer["NEW_WALLS"]
+    assert path_a != path_b
+    assert path_a.exists() and path_b.exists()
+    assert path_a.read_bytes() != path_b.read_bytes()
+
+
 def test_per_layer_exceptions_caught_but_batch_continues(tmp_path, monkeypatch):
     """Exceptions on individual layer renders (but not RenderUnavailable) must be caught."""
     p = _doc(tmp_path)

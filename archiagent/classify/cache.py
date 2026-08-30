@@ -39,14 +39,32 @@ def inventory_key(stats: tuple[LayerStats, ...], model: str,
     """A stable digest of everything that could change the answer.
 
     INVARIANT: every numeric field below is rounded AT LEAST as finely as
-    `prompt._row` renders it (axis% to 0 decimals here rounded to 4; p10/p50/
-    p90 to 1 decimal there, 3 here; bbox to 1 there, 2 here). So the key can
-    only ever distinguish two inventories that the prompt renders
-    identically -- a needless MISS, which is merely a wasted call. It can
-    never collapse two inventories the prompt renders DIFFERENTLY into one
-    key, which would be a false HIT serving the wrong drawing's answer.
-    Coarsening a field here, or adding precision to `_row`, breaks that
-    direction; test_key_rounding_is_at_least_as_fine_as_the_prompt guards it.
+    the prompt that renders it (axis% to 0 decimals here rounded to 4; p10/
+    p50/p90 to 1 decimal there, 3 here; bbox to 1 there, 2 here; DXF
+    share% to 1 decimal there, 4 here). So the key can only ever distinguish
+    two inventories that the prompt renders identically -- a needless MISS,
+    which is merely a wasted call. It can never collapse two inventories the
+    prompt renders DIFFERENTLY into one key, which would be a false HIT
+    serving the wrong drawing's answer. Coarsening a field here, or adding
+    precision to `_row` / `_dxf_row`, breaks that direction;
+    test_key_rounding_is_at_least_as_fine_as_the_prompt guards it for the
+    PDF fields.
+
+    The seven DXF-only LayerStats fields (entity_mix, entity_share,
+    lineweight, linetype, is_off, is_frozen, extent_ratio) are hashed too.
+    `build_dxf_user_prompt` / `_dxf_row` render six of them straight into
+    the prompt the model sees (entity_mix, entity_share, lineweight,
+    linetype, is_off, is_frozen, folded into a "flags" column) -- omitting
+    them would let a DXF-only edit (unfreezing a layer, raising a
+    lineweight off the -3 "no signal" sentinel) collide with the pre-edit
+    key and serve a stale answer, silently, since a cache HIT returns
+    before the inner classifier -- and therefore before on_issue -- ever
+    runs. extent_ratio is not currently prompt-rendered but is included
+    anyway: an unrendered field can only ever cause a needless MISS, never
+    a false HIT, so hashing it trades nothing away and guards against it
+    being wired into the prompt later without this key being updated to
+    match. These fields are absent (left at their dataclass defaults) for
+    the PDF front-end, so this changes nothing for PDF inventories.
     """
     payload = {
         "prompt_version": PROMPT_VERSION,
@@ -66,6 +84,13 @@ def inventory_key(stats: tuple[LayerStats, ...], model: str,
                 "widths": [round(w, 2) for w in s.stroke_widths],
                 "colors": [[round(c, 3) for c in rgb]
                            for rgb in s.dominant_colors],
+                "entity_mix": [[k, v] for k, v in s.entity_mix],
+                "entity_share": round(s.entity_share, 4),
+                "lineweight": s.lineweight,
+                "linetype": s.linetype,
+                "is_off": s.is_off,
+                "is_frozen": s.is_frozen,
+                "extent_ratio": round(s.extent_ratio, 4),
             }
             for s in stats
         ],

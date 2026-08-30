@@ -22,7 +22,7 @@ from archiagent.classify.escalate import (ESCALATION_CAP, escalation_candidates,
                                           select_for_escalation)
 from archiagent.classify.inventory import LayerStats
 from archiagent.classify.layers import Classification
-from archiagent.classify.llm_classifier import decisions_from_reply
+from archiagent.classify.llm_classifier import MAX_TOKENS, decisions_from_reply
 from archiagent.classify.prompt import (DXF_SYSTEM_PROMPT,
                                         build_dxf_user_prompt,
                                         response_schema)
@@ -34,16 +34,29 @@ from archiagent.classify.thumbnails import RenderUnavailable, render_for_escalat
 from archiagent.llm.client import LLMClient
 from archiagent.model import Issue
 
-MAX_TOKENS = 2048
+# MAX_TOKENS is defined once, in llm_classifier.py, and imported here rather
+# than redeclared -- two independent constants of the same name meant
+# bumping one silently left the DXF and PDF paths on different budgets.
 
 # Where rendered layer thumbnails land when the caller does not specify a
-# cache_dir. Confidential client drawings, so this must never be under the
-# repo, and it must not be a shared, cross-client bucket like the user's
-# home cache either -- a render is a pixel-perfect picture of one client's
-# building, not a small JSON role decision. .archiagent-cache/ is scoped to
-# the engagement, deletable with it, and already covered by this repo's
-# .gitignore.
-DEFAULT_CACHE_DIR = Path(".archiagent-cache") / "thumbnails"
+# cache_dir, relative to the directory holding the drawing itself. Confidential
+# client drawings, so this must never be under the repo, and it must not be a
+# shared, cross-client bucket like the user's home cache either -- a render is
+# a pixel-perfect picture of one client's building, not a small JSON role
+# decision. .archiagent-cache/ is scoped to the engagement, deletable with it,
+# and already covered by THIS repo's .gitignore -- but that .gitignore only
+# protects the path inside this repo. Anchoring it to the process's current
+# working directory (as an earlier revision did) meant running the tool from
+# a client's own git repo, or from a home directory under version control,
+# could land renders of a confidential building somewhere nothing ignores.
+# Anchoring it to the input DXF's own directory instead means the renders sit
+# beside the drawing they came from, regardless of where the tool is invoked
+# from.
+DEFAULT_CACHE_DIR_NAME = Path(".archiagent-cache") / "thumbnails"
+
+
+def _default_cache_dir(dxf_path: str | Path) -> Path:
+    return Path(dxf_path).resolve().parent / DEFAULT_CACHE_DIR_NAME
 
 
 class DxfLayerClassifier:
@@ -51,16 +64,23 @@ class DxfLayerClassifier:
 
     Satisfies the LayerClassifier protocol -- pipeline.py calls `classify`
     and never learns whether vision happened.
+
+    `vision` defaults to True: the shipped policy is vision ON by default,
+    and that policy belongs on the component itself, not only in the CLI
+    that happens to construct it today. A script, notebook, or test that
+    builds this class directly gets the same default the CLI ships --
+    escalated layers get a second look via rendered images sent to the
+    configured LLM provider -- unless it opts out explicitly.
     """
 
     def __init__(self, client: LLMClient, dxf_path: str | Path, *,
-                vision: bool = False, cache_dir: str | Path | None = None,
+                vision: bool = True, cache_dir: str | Path | None = None,
                 on_issue: Callable[[object], None] | None = None) -> None:
         self._client = client
         self._dxf_path = dxf_path
         self._vision = vision
         self._cache_dir = (Path(cache_dir) if cache_dir is not None
-                           else DEFAULT_CACHE_DIR)
+                           else _default_cache_dir(dxf_path))
         self._on_issue = on_issue
 
     def classify(self, stats: tuple[LayerStats, ...]) -> Classification:

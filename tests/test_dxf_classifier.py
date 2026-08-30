@@ -2,7 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from archiagent.classify.dxf_classifier import DEFAULT_CACHE_DIR, DxfLayerClassifier
+from archiagent.classify.dxf_classifier import (DEFAULT_CACHE_DIR_NAME,
+                                                DxfLayerClassifier,
+                                                _default_cache_dir)
 from archiagent.classify.escalate import ESCALATION_CAP
 from archiagent.classify.inventory import LayerStats
 from archiagent.classify.roles import Role
@@ -182,14 +184,52 @@ def test_a_layer_missing_from_the_render_map_is_reported_even_if_others_render(
     assert "render unavailable" in grid_issues[0].msg
 
 
+def test_vision_defaults_to_on_when_the_caller_omits_it(tmp_path, monkeypatch):
+    """The shipped policy is vision ON by default, and that policy belongs
+    on the component itself -- a script, notebook, or copied test that
+    constructs DxfLayerClassifier directly (as this test does, omitting
+    `vision=`) must get the same behaviour as the CLI, not the superseded
+    opt-in-off default."""
+    monkeypatch.setattr(
+        "archiagent.classify.dxf_classifier.render_for_escalation",
+        lambda *a, **k: (tmp_path / "ref.png", {"0": tmp_path / "0.png"}))
+    (tmp_path / "ref.png").write_bytes(b"REF")
+    (tmp_path / "0.png").write_bytes(b"ZERO")
+
+    c = FakeClient(_reply([("0", "ignore", 0.5)]), _reply([("0", "wall_structural", 0.9)]))
+    clf = DxfLayerClassifier(c, tmp_path / "x.dxf", cache_dir=tmp_path)  # vision omitted
+    clf.classify((_s("0", 0.5),))
+
+    assert c.vision_calls == 1
+
+
 def test_default_cache_dir_is_scoped_to_the_engagement():
     """.archiagent-cache/ is git-ignored and scoped to this engagement --
     unlike a home cache directory, it is not a shared bucket that
     accumulates pixel-perfect renders of every client's drawing."""
-    assert DEFAULT_CACHE_DIR == Path(".archiagent-cache") / "thumbnails"
+    assert DEFAULT_CACHE_DIR_NAME == Path(".archiagent-cache") / "thumbnails"
 
 
-def test_no_cache_dir_argument_resolves_under_dot_archiagent_cache(
+def test_default_cache_dir_is_anchored_to_the_dxf_not_the_cwd(tmp_path,
+                                                               monkeypatch):
+    """A repo-relative or CWD-relative default would scatter renders of a
+    confidential client building into whatever git repo the tool happens to
+    be invoked from. Changing directory must not change the resolved
+    default -- only the input path's own location may."""
+    monkeypatch.chdir(tmp_path)
+    other_cwd_default = _default_cache_dir(tmp_path / "somewhere" / "x.dxf")
+
+    project_dir = tmp_path / "elsewhere-entirely"
+    project_dir.mkdir()
+    monkeypatch.chdir(project_dir)
+    resolved = _default_cache_dir(tmp_path / "somewhere" / "x.dxf")
+
+    assert resolved == other_cwd_default
+    assert resolved == (tmp_path / "somewhere").resolve() / ".archiagent-cache" / "thumbnails"
+    assert Path.cwd().resolve() not in resolved.parents
+
+
+def test_no_cache_dir_argument_resolves_beside_the_drawing(
         tmp_path, monkeypatch):
     captured = {}
 
@@ -201,8 +241,12 @@ def test_no_cache_dir_argument_resolves_under_dot_archiagent_cache(
         "archiagent.classify.dxf_classifier.render_for_escalation", fake_render)
     (tmp_path / "ref.png").write_bytes(b"REF")
 
+    drawing_dir = tmp_path / "client-drawings"
+    drawing_dir.mkdir()
+    dxf_path = drawing_dir / "x.dxf"
+
     c = FakeClient(_reply([("0", "ignore", 0.5)]))
-    clf = DxfLayerClassifier(c, tmp_path / "x.dxf", vision=True)  # cache_dir omitted
+    clf = DxfLayerClassifier(c, dxf_path, vision=True)  # cache_dir omitted
     clf.classify((_s("0", 0.5),))
 
-    assert captured["cache_dir"] == Path(".archiagent-cache") / "thumbnails"
+    assert captured["cache_dir"] == drawing_dir.resolve() / ".archiagent-cache" / "thumbnails"

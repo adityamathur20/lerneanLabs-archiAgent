@@ -182,3 +182,72 @@ def test_classifier_reported_issues_reach_cli_output(tmp_path, monkeypatch,
     err = capsys.readouterr().err
     assert "layer_escalation_skipped" in err
     assert "WALLS" in err
+
+
+# --- vision-by-default, end to end through the real CLI -------------------
+#
+# Escalation mechanics are covered at the DxfLayerClassifier unit level
+# (test_dxf_classifier.py) and the wire format at the adapter level -- but
+# no test drove the DEFAULT vision-on path through the real CLI: main() ->
+# _dxf_classifier -> vision=True -> _escalate -> classify_json_vision. That
+# full chain is this branch's headline behaviour (vision by default) and
+# its riskiest (it transmits images), so it deserves one test that actually
+# exercises it end to end rather than only composing separately-tested
+# pieces.
+
+class _VisionRecordingClient:
+    """Stands in for a real LLMClient. Records whether classify_json_vision
+    -- the call that would transmit rendered images to a live provider --
+    was actually reached. No credentials, no network."""
+
+    def __init__(self, stage1_reply, stage2_reply):
+        self._stage1_reply = stage1_reply
+        self._stage2_reply = stage2_reply
+        self.vision_called = False
+        self.vision_kwargs = None
+
+    def classify_json(self, **kw):
+        return self._stage1_reply
+
+    def classify_json_vision(self, **kw):
+        self.vision_called = True
+        self.vision_kwargs = kw
+        return self._stage2_reply
+
+
+def test_vision_path_executes_end_to_end_through_the_cli(tmp_path, monkeypatch):
+    """Drives main() with vision left ON (no --no_vision, no
+    ARCHIAGENT_VISION override) over a small generated DXF, and asserts the
+    vision stage actually ran. render_for_escalation is monkeypatched (as
+    test_dxf_classifier.py does) so the test does not depend on the
+    optional matplotlib/Pillow extra being installed -- the point here is
+    proving the CLI's wiring reaches classify_json_vision, not re-testing
+    the renderer."""
+    d = _dxf(tmp_path)                      # one low-signal WALLS layer
+
+    stage1_reply = {"layers": [{"name": "WALLS", "role": "wall_structural",
+                                "confidence": 0.5, "reason": "unsure"}]}
+    stage2_reply = {"layers": [{"name": "WALLS", "role": "wall_structural",
+                                "confidence": 0.95,
+                                "reason": "confirmed by image"}]}
+    fake = _VisionRecordingClient(stage1_reply, stage2_reply)
+    monkeypatch.setattr("archiagent.cli.build_client", lambda cfg: fake)
+
+    ref_png = tmp_path / "ref.png"
+    layer_png = tmp_path / "walls.png"
+    ref_png.write_bytes(b"\x89PNG fake reference render")
+    layer_png.write_bytes(b"\x89PNG fake WALLS render")
+    monkeypatch.setattr(
+        "archiagent.classify.dxf_classifier.render_for_escalation",
+        lambda dxf_path, layers, cache_dir: (ref_png, {"WALLS": layer_png}))
+
+    monkeypatch.delenv("ARCHIAGENT_VISION", raising=False)
+    out_dir = tmp_path / "out"
+    code = main(["--dxfFilePath", str(d), "--outputDir", str(out_dir),
+                "--no-cache"])                       # note: no --no_vision
+
+    assert code == EXIT_OK
+    assert fake.vision_called is True
+    assert [label for label, _ in fake.vision_kwargs["images"]] == \
+        ["reference", "layer WALLS"]
+    assert (out_dir / "t.ifc").exists()

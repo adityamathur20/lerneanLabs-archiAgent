@@ -10,6 +10,7 @@ under a caller-supplied cache directory, which .gitignore covers.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 from typing import Sequence
@@ -45,7 +46,23 @@ def _backend():
 
 
 def _safe(name: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]", "_", name) or "_"
+    """Sanitise a layer name into a filesystem-safe stem, UNIQUE per name.
+
+    Mapping every character outside [A-Za-z0-9_.-] to "_" is lossy: "NEW
+    WALLS" and "NEW_WALLS" -- an ordinary real-world spelling
+    inconsistency, and both conventions appear in this project's own
+    drawings -- sanitise to the identical stem. render_for_escalation
+    writes one PNG per candidate layer under a name built from this, so a
+    collision means the second layer's render clobbers the first's file on
+    disk, and the classifier then sends the SAME image twice to the vision
+    model captioned as two different layers -- one layer's evidence
+    silently replaced by another's. Appending a short hash of the ORIGINAL
+    (pre-sanitised) name keeps the stem readable while guaranteeing two
+    different layer names never collide on one file.
+    """
+    stem = re.sub(r"[^A-Za-z0-9_.-]", "_", name) or "_"
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
+    return f"{stem}_{digest}"
 
 
 def render_layer(dxf_path: str | Path, layer: str | None, out_png: Path,

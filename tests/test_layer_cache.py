@@ -129,6 +129,59 @@ def test_key_changes_when_the_base_url_changes():
     assert a != b
 
 
+def _dxf_stats(name, **kw):
+    defaults = dict(path_count=187, segment_count=187,
+                    axis_aligned_fraction=1.0, stroke_widths=(0.0,),
+                    dominant_colors=((0.0, 0.0, 0.0),),
+                    bbox=(0.0, 0.0, 10.0, 10.0),
+                    length_p10=4.3, length_p50=23.2, length_p90=71.0,
+                    entity_mix=(("LINE", 812),), entity_share=0.25,
+                    lineweight=-3, linetype="CONTINUOUS", is_off=False,
+                    is_frozen=False, extent_ratio=0.5)
+    defaults.update(kw)
+    return LayerStats(name=name, **defaults)
+
+
+def test_key_changes_when_is_frozen_changes():
+    """A DXF layer table edit (un-freezing a layer) is a signal the DXF
+    prompt renders in its `flags` column. Geometry is untouched, so every
+    PDF-shared field is byte-identical -- only this DXF-only field can
+    catch it."""
+    a = inventory_key((_dxf_stats("WALLS", is_frozen=True),), "m")
+    b = inventory_key((_dxf_stats("WALLS", is_frozen=False),), "m")
+    assert a != b
+
+
+def test_key_changes_when_lineweight_changes():
+    """Raising a lineweight off the -3 'no signal' sentinel is exactly the
+    kind of edit the DXF prompt is built around."""
+    a = inventory_key((_dxf_stats("WALLS", lineweight=-3),), "m")
+    b = inventory_key((_dxf_stats("WALLS", lineweight=35),), "m")
+    assert a != b
+
+
+def test_key_changes_when_entity_mix_changes():
+    a = inventory_key((_dxf_stats("WALLS", entity_mix=(("LINE", 812),)),), "m")
+    b = inventory_key((_dxf_stats("WALLS", entity_mix=(("ARC", 30),)),), "m")
+    assert a != b
+
+
+def test_key_changes_when_entity_share_changes():
+    a = inventory_key((_dxf_stats("WALLS", entity_share=0.25),), "m")
+    b = inventory_key((_dxf_stats("WALLS", entity_share=0.60),), "m")
+    assert a != b
+
+
+def test_key_does_not_change_for_a_dxf_float_difference_the_prompt_cannot_see():
+    """Preserves the existing invariant rather than trading it away: a
+    difference below the DXF prompt's own rounding (entity_share to 1
+    decimal of a percentage, i.e. 3 decimals of the fraction) must still
+    collapse to the same key."""
+    a = _dxf_stats("WALLS", entity_share=0.250000)
+    b = _dxf_stats("WALLS", entity_share=0.2500004)
+    assert inventory_key((a,), "m") == inventory_key((b,), "m")
+
+
 def test_key_rounding_is_at_least_as_fine_as_the_prompt_renders_it():
     """The key's invariant: it may distinguish inventories the prompt renders
     identically (a needless MISS -- safe), never the reverse (a false HIT
