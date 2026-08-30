@@ -185,21 +185,31 @@ from the inventory, never from the reply.
 
 ---
 
-## 7. Privacy: vision is opt-in, default off
+## 7. Privacy: vision is ON by default, disabled with `--no_vision`
 
-**Decision, 2026-08-30.** Stage 1 transmits layer names and statistics.
-Stage 2 transmits *pictures of a client's building* — a materially different
-disclosure.
+**Original decision, 2026-08-30 — SUPERSEDED.** Stage 2 was opt-in, default
+off, on the grounds that stage 1 transmits only layer names and statistics
+while stage 2 transmits *pictures of a client's building*, a materially
+different disclosure.
 
-Stage 2 therefore runs only when explicitly enabled by the CLI flag
-`--vision`, or by setting `ARCHIAGENT_VISION=1`. The flag wins over the
-environment variable when both are present. Default behaviour is stage 1
-only, with an
-`Issue` naming every layer that would have been escalated, so the user can
-see what the default cost them and opt in deliberately.
+**Superseding decision, 2026-08-30.** Stage 2 runs **by default**. It is
+disabled with the CLI flag `--no_vision`, or by setting
+`ARCHIAGENT_VISION=0`. The flag wins over the environment variable when both
+are present.
 
-Consequence, accepted: on an unfamiliar drawing the default run may
-misclassify the layer-`0` case until the user passes `--vision`.
+*Why the reversal:* accuracy beats disclosure-minimisation for this project's
+users. The measured failure the escalation rule exists to catch — a drawing
+whose walls sit on the unnamed default layer `0`, holding 54.9% of entities,
+which stage 1 confidently classifies as `ignore` (§2.3) — is corrected only
+by looking at the picture. Shipping that correction off by default makes the
+common case the wrong case.
+
+*Consequence, accepted:* rendered images of client buildings are transmitted
+to the configured LLM provider on every DXF run unless `--no_vision` is
+passed. This must be stated plainly in `--help` and the README so it is never
+a surprise. Escalations are reported as `Issue`s either way — judged by
+picture, or skipped.
+
 
 ---
 
@@ -264,3 +274,32 @@ is blocked until DXF ingest lands.**
   `IfcSlab`** — there is no floor. Independent of this work.
 - W3 text recovery, despite §2.4's lead.
 - Symbol recognition from `INSERT` block names.
+
+
+---
+
+## 12. CLI shape (amended 2026-08-30)
+
+The original CLI took the input PDF and the output IFC as positional
+arguments. With `--dxfFilePath` added that became unsafe: argparse cannot
+distinguish `PDF --dxfFilePath X` (a usage error) from `--dxfFilePath X
+OUT_IFC` (valid) — both present as one DXF plus one stray positional. The
+stray was assumed to be the output path, so
+`archiagent myplan.pdf --dxfFilePath drawing.dxf` exited 0 and **overwrote
+myplan.pdf with the authored IFC**. Reproduced 2026-08-30.
+
+**Amendment: every input and output is a named flag. No positionals.**
+
+| Flag | Meaning |
+|---|---|
+| `--dxfFilePath PATH` | input DXF |
+| `--pdfFilePath PATH` | input PDF |
+| `--outputDir DIR` | directory to write into; filename derived from the input stem (`drawing.dxf` -> `<DIR>/drawing.ifc`) |
+| `--no_vision` | disable the vision stage (§7) |
+
+Exactly one of `--dxfFilePath` / `--pdfFilePath` must be given. Neither, and
+both, are usage errors that name both options.
+
+`--outputDir` being a directory rather than a filename is the structural fix:
+the tool derives its own output name and can only write inside a directory the
+user named, so no input file can be targeted by accident.
