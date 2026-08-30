@@ -51,11 +51,17 @@ def render_layer(dxf_path: str | Path, layer: str | None, out_png: Path,
 
 def render_for_escalation(dxf_path: str | Path, layers: Sequence[str],
                           cache_dir: Path) -> tuple[Path, dict[str, Path]]:
+    import ezdxf
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     ref = render_layer(dxf_path, None, cache_dir / "_reference.png")
     out: dict[str, Path] = {}
+    doc = ezdxf.readfile(str(dxf_path))
+    msp = doc.modelspace()
     for lay in layers:
+        # Skip layers with no entities to avoid blank renders
+        if not any(e.dxf.layer == lay for e in msp):
+            continue
         try:
             out[lay] = render_layer(dxf_path, lay,
                                     cache_dir / f"layer_{_safe(lay)}.png")

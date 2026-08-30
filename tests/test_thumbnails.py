@@ -67,6 +67,7 @@ def test_a_layer_that_does_not_exist_is_omitted_not_fatal(tmp_path):
     p = _doc(tmp_path)
     ref, per_layer = render_for_escalation(p, ["WALL", "NOPE"], tmp_path / "cache")
     assert "WALL" in per_layer
+    assert "NOPE" not in per_layer, "Layer with no entities should be omitted from map"
     assert ref.exists()
 
 
@@ -78,3 +79,44 @@ def test_output_stays_inside_the_cache_dir(tmp_path):
     ref, per_layer = render_for_escalation(p, ["WALL"], cache)
     assert cache in ref.parents
     assert all(cache in v.parents for v in per_layer.values())
+
+
+def test_render_unavailable_propagates(tmp_path, monkeypatch):
+    """RenderUnavailable from missing matplotlib/Pillow must propagate, not be swallowed."""
+    from archiagent.classify.thumbnails import RenderUnavailable
+    p = _doc(tmp_path)
+
+    # Monkeypatch _backend to raise RenderUnavailable
+    import archiagent.classify.thumbnails as thumbs_module
+    original_backend = thumbs_module._backend
+
+    def mock_backend():
+        raise RenderUnavailable("test: matplotlib not available")
+
+    monkeypatch.setattr(thumbs_module, "_backend", mock_backend)
+
+    # render_for_escalation should propagate RenderUnavailable, not catch it
+    with pytest.raises(RenderUnavailable):
+        render_for_escalation(p, ["WALL"], tmp_path / "cache")
+
+
+def test_per_layer_exceptions_caught_but_batch_continues(tmp_path, monkeypatch):
+    """Exceptions on individual layer renders (but not RenderUnavailable) must be caught."""
+    p = _doc(tmp_path)
+
+    # Monkeypatch render_layer to raise for layer "WALL" only
+    import archiagent.classify.thumbnails as thumbs_module
+    original_render = thumbs_module.render_layer
+
+    def mock_render_layer(dxf_path, layer, out_png, **kwargs):
+        if layer == "WALL":
+            raise RuntimeError("test: rendering failed for WALL")
+        return original_render(dxf_path, layer, out_png, **kwargs)
+
+    monkeypatch.setattr(thumbs_module, "render_layer", mock_render_layer)
+
+    # render_for_escalation should catch the exception for WALL but render TINY
+    ref, per_layer = render_for_escalation(p, ["WALL", "TINY"], tmp_path / "cache")
+    assert "WALL" not in per_layer, "Layer with rendering exception should be omitted"
+    assert "TINY" in per_layer, "Other layers should still be rendered"
+    assert ref.exists()
