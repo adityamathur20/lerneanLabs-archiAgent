@@ -99,9 +99,41 @@ def response_schema() -> dict:
     }
 
 
+DXF_SYSTEM_PROMPT = """\
+You are classifying the layers of a DXF architectural floorplan so a
+deterministic pipeline can build a 3D model of the WALLS.
+
+You are given one row per layer. Use every column:
+
+- name: the drafter's own label. Usually the strongest signal, but CAD
+  offices do not follow the AIA/NCS standard -- expect names like
+  "NEW WALLS", "walll", "COLUM HATCH", "win", "FURN".
+- entities: counts by DXF entity type. ARC-heavy layers are usually doors
+  (door swings are arcs). MTEXT/TEXT-heavy layers are labels. DIMENSION
+  means a dimension layer. HATCH means fill, not wall faces.
+- lineweight: walls and columns are drafted heavy (30-40); doors, windows
+  and furniture light (5-9). A value of -3 means "default", i.e. no signal.
+- linetype: HIDDEN usually means an element above the cut plane, such as a
+  beam.
+- share: the fraction of the drawing's entities on this layer.
+- frozen/off: the drafter turned this layer off. Weak evidence it is not
+  part of the plan.
+
+Two warnings drawn from real drawings:
+
+1. The default layer "0" is sometimes where the entire building is drawn,
+   holding more than half the entities. Its name tells you nothing. Judge it
+   on its share and its entity mix, not on its name.
+2. A drawing often splits walls across several layers. Classify EVERY
+   wall-carrying layer as a wall, not just the best one.
+
+Return one entry per layer. Do not invent layers.
+"""
+
+
 PROMPT_VERSION = hashlib.sha256(
-    (SYSTEM_PROMPT + json.dumps(response_schema(), sort_keys=True))
-    .encode("utf-8")
+    (SYSTEM_PROMPT + DXF_SYSTEM_PROMPT
+     + json.dumps(response_schema(), sort_keys=True)).encode("utf-8")
 ).hexdigest()[:12]
 """Identity of the prompt, DERIVED from its content rather than declared.
 
@@ -146,3 +178,20 @@ def build_user_prompt(stats: tuple[LayerStats, ...]) -> str:
     return (f"This drawing has {len(stats)} layers.\n\n"
             f"{header}\n{rows}\n\n"
             "Classify every one of them.")
+
+
+def _dxf_row(s: LayerStats) -> str:
+    x0, y0, x1, y1 = s.bbox
+    mix = " ".join(f"{k}:{v}" for k, v in s.entity_mix) or "-"
+    lw = "default" if s.lineweight in (None, -3) else str(s.lineweight)
+    flags = ",".join(f for f, on in (("frozen", s.is_frozen), ("off", s.is_off)) if on) or "-"
+    return (f'{json.dumps(s.name)} | entities={mix} | share={s.entity_share * 100:.1f}% '
+            f'| lineweight={lw} | linetype={s.linetype or "-"} | flags={flags} '
+            f'| size={x1 - x0:.0f}x{y1 - y0:.0f} | axis={s.axis_aligned_fraction:.2f} '
+            f'| len_p50={s.length_p50:.1f}')
+
+
+def build_dxf_user_prompt(stats: tuple[LayerStats, ...]) -> str:
+    rows = "\n".join(_dxf_row(s) for s in stats)
+    return (f"INVENTORY ({len(stats)} layers)\n{rows}\n\n"
+            "Classify every layer listed above.")

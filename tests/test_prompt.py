@@ -3,7 +3,8 @@ import json
 
 from archiagent.classify.inventory import LayerStats
 from archiagent.classify.prompt import (PROMPT_VERSION, SYSTEM_PROMPT,
-                                        build_user_prompt, response_schema)
+                                        DXF_SYSTEM_PROMPT, build_user_prompt,
+                                        response_schema)
 from archiagent.classify.roles import Role
 
 
@@ -72,7 +73,8 @@ def test_prompt_version_is_derived_from_the_prompt_and_the_schema():
     content, so any edit to SYSTEM_PROMPT or the schema that fails to
     propagate breaks this test instead of silently serving stale answers."""
     expected = hashlib.sha256(
-        (SYSTEM_PROMPT + json.dumps(response_schema(), sort_keys=True))
+        (SYSTEM_PROMPT + DXF_SYSTEM_PROMPT
+         + json.dumps(response_schema(), sort_keys=True))
         .encode("utf-8")
     ).hexdigest()[:12]
     assert PROMPT_VERSION == expected
