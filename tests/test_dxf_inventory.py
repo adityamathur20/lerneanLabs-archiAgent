@@ -28,6 +28,8 @@ def test_entity_mix_and_share(tmp_path):
     assert dict(stats["FURN"].entity_mix)["ARC"] == 1
     assert stats["WALL"].entity_share > stats["FURN"].entity_share
     assert abs(sum(s.entity_share for s in stats.values()) - 1.0) < 1e-6
+    # WALL starts at origin (0,0) but should still get extent_ratio > 0
+    assert stats["WALL"].extent_ratio > 0.0
 
 
 def test_layer_table_attributes_are_carried(tmp_path):
@@ -38,6 +40,8 @@ def test_layer_table_attributes_are_carried(tmp_path):
     assert stats["FURN"].lineweight == 9
     assert stats["GRID"].is_frozen is True
     assert stats["WALL"].is_frozen is False
+    # GRID starts at origin but should still get extent_ratio > 0
+    assert stats["GRID"].extent_ratio > 0.0
 
 
 def test_arc_only_layer_is_visible_in_the_mix(tmp_path):
@@ -90,29 +94,55 @@ def test_arc_only_layer_gets_extent_ratio(tmp_path):
     assert "ARC" in dict(stats["ARCS"].entity_mix)
 
 
-def test_arc_extent_ratio_scales_with_size(tmp_path):
-    """Smaller ARC layers in large drawings should have smaller extent_ratio
-    than the same arc in a small drawing."""
+def test_origin_touching_geometry_gets_extent_ratio(tmp_path):
+    """Regression test: geometry starting exactly at the origin (0,0,0) must
+    get correct extent_ratio > 0. Vec3.__bool__ returns False for origin
+    vectors, so truthiness checks fail — use has_data instead."""
+    doc = ezdxf.new()
+    doc.header["$INSUNITS"] = 1
+    doc.layers.add("ORIGIN")
+    doc.layers.add("REF")
+    msp = doc.modelspace()
+    # Add reference line to define drawing bounds
+    msp.add_line((0, 0), (100, 100), dxfattribs={"layer": "REF"})
+    # Add line starting exactly at origin
+    msp.add_line((0, 0), (50, 50), dxfattribs={"layer": "ORIGIN"})
+    p = tmp_path / "origin.dxf"
+    doc.saveas(p)
+
+    ps, _ = load_dxf(p)
+    stats = {s.name: s for s in build_dxf_inventory(p, ps)}
+
+    # ORIGIN layer starts at (0,0) but should have extent_ratio > 0
+    assert stats["ORIGIN"].extent_ratio > 0.0
+
+
+def test_arc_extent_ratio_scales_with_arc_size(tmp_path):
+    """extent_ratio must scale with the arc's actual size relative to a
+    fixed drawing extent. Both docs have the same 100x100 bounds, but arcs
+    of different radii."""
+    # Small arc
     doc1 = ezdxf.new()
     doc1.header["$INSUNITS"] = 1
     doc1.layers.add("ARCS")
-    doc1.layers.add("REF")  # Reference layer to define drawing bounds
     msp1 = doc1.modelspace()
-    # Large drawing bounds (100x100) with small arc
-    msp1.add_line((0, 0), (100, 100), dxfattribs={"layer": "REF"})
+    # Fixed drawing bounds (0,0 to 100,100)
+    msp1.add_line((0, 0), (100, 100), dxfattribs={"layer": "__REF__"})
+    # Small arc (radius=5) centered in drawing
     msp1.add_arc((50, 50), 5, 0, 90, dxfattribs={"layer": "ARCS"})
-    p1 = tmp_path / "large_drawing.dxf"
+    p1 = tmp_path / "small_arc.dxf"
     doc1.saveas(p1)
 
+    # Large arc
     doc2 = ezdxf.new()
     doc2.header["$INSUNITS"] = 1
     doc2.layers.add("ARCS")
-    doc2.layers.add("REF")
     msp2 = doc2.modelspace()
-    # Small drawing bounds (20x20) with same size arc
-    msp2.add_line((0, 0), (20, 20), dxfattribs={"layer": "REF"})
-    msp2.add_arc((10, 10), 5, 0, 90, dxfattribs={"layer": "ARCS"})
-    p2 = tmp_path / "small_drawing.dxf"
+    # Same fixed drawing bounds (0,0 to 100,100)
+    msp2.add_line((0, 0), (100, 100), dxfattribs={"layer": "__REF__"})
+    # Large arc (radius=40) centered in drawing
+    msp2.add_arc((50, 50), 40, 0, 90, dxfattribs={"layer": "ARCS"})
+    p2 = tmp_path / "large_arc.dxf"
     doc2.saveas(p2)
 
     ps1, _ = load_dxf(p1)
@@ -123,5 +153,5 @@ def test_arc_extent_ratio_scales_with_size(tmp_path):
     # Both should have extent_ratio > 0
     assert stats1["ARCS"].extent_ratio > 0.0
     assert stats2["ARCS"].extent_ratio > 0.0
-    # Arc in large drawing should have smaller ratio than in small drawing
-    assert stats1["ARCS"].extent_ratio < stats2["ARCS"].extent_ratio
+    # Large arc should have larger ratio
+    assert stats2["ARCS"].extent_ratio > stats1["ARCS"].extent_ratio

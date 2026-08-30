@@ -49,10 +49,11 @@ def build_dxf_inventory(dxf_path: str | Path,
         if entities_in_layer:
             try:
                 bbox_result = extents(entities_in_layer)
-                # extents() returns a BoundingBox with (min, max) tuples
-                # Check if it's valid (not infinity)
-                min_pt, max_pt = bbox_result.extmin, bbox_result.extmax
-                if min_pt and max_pt and all(abs(c) != float('inf') for c in min_pt) and all(abs(c) != float('inf') for c in max_pt):
+                # has_data is the documented way to check for valid extents.
+                # Note: Vec3.__bool__ returns False for origin vectors, so truthiness
+                # checks fail for geometry starting at (0,0,0) — use has_data instead.
+                if bbox_result.has_data:
+                    min_pt, max_pt = bbox_result.extmin, bbox_result.extmax
                     area = ((max_pt[0] - min_pt[0]) * (max_pt[1] - min_pt[1]))
                     ratio = area / draw_area
             except Exception:
