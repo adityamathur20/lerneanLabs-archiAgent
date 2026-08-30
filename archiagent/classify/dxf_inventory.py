@@ -13,6 +13,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import ezdxf
+from ezdxf.bbox import extents
 
 from archiagent.classify.inventory import LayerStats, build_inventory
 from archiagent.primitives import PrimitiveSet
@@ -24,32 +25,40 @@ def build_dxf_inventory(dxf_path: str | Path,
     msp = doc.modelspace()
 
     mix: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
-    bbox: dict[str, list[float]] = {}
     total = 0
     for e in msp:
         total += 1
         lay = e.dxf.layer
         mix[lay][e.dxftype()] += 1
 
-    for pr in ps.primitives:
-        b = bbox.setdefault(pr.layer, [1e30, 1e30, -1e30, -1e30])
-        for x, y in pr.coords:
-            b[0] = min(b[0], x); b[1] = min(b[1], y)
-            b[2] = max(b[2], x); b[3] = max(b[3], y)
-
     draw_area = max(ps.width * ps.height, 1e-9)
     base = {s.name: s for s in build_inventory(ps)}
     table = {l.dxf.name: l for l in doc.layers}
 
     out: list[LayerStats] = []
-    for name in sorted(set(base) | set(mix)):
+    for name in sorted(set(base) | set(mix) | set(table)):
         s = base.get(name) or LayerStats(
             name=name, path_count=0, segment_count=0, axis_aligned_fraction=0.0,
             stroke_widths=(), dominant_colors=(), bbox=(0.0, 0.0, 0.0, 0.0),
             length_p10=0.0, length_p50=0.0, length_p90=0.0)
         lay = table.get(name)
-        b = bbox.get(name)
-        ratio = (((b[2] - b[0]) * (b[3] - b[1])) / draw_area) if b else 0.0
+
+        # Compute extent_ratio from DXF entities in this layer
+        entities_in_layer = [e for e in msp if e.dxf.layer == name]
+        ratio = 0.0
+        if entities_in_layer:
+            try:
+                bbox_result = extents(entities_in_layer)
+                # extents() returns a BoundingBox with (min, max) tuples
+                # Check if it's valid (not infinity)
+                min_pt, max_pt = bbox_result.extmin, bbox_result.extmax
+                if min_pt and max_pt and all(abs(c) != float('inf') for c in min_pt) and all(abs(c) != float('inf') for c in max_pt):
+                    area = ((max_pt[0] - min_pt[0]) * (max_pt[1] - min_pt[1]))
+                    ratio = area / draw_area
+            except Exception:
+                # Non-fatal: if bbox cannot be computed, fall back to 0.0
+                ratio = 0.0
+
         out.append(replace(
             s,
             entity_mix=tuple(mix[name].most_common(5)),
