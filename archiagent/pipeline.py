@@ -16,7 +16,7 @@ from archiagent.ingest.pdf_vector import load_pdf
 from archiagent.model import BuildingModel, Issue
 from archiagent.primitives import PrimitiveSet
 from archiagent.scale.dimensions import extract_dimensions
-from archiagent.scale.resolve import candidate_runs, resolve_scale
+from archiagent.scale.resolve import ScaleResult, candidate_runs, resolve_scale
 from archiagent.validate import validate
 
 
@@ -50,6 +50,57 @@ def extract_from_primitives(ps: PrimitiveSet, classifier: LayerClassifier,
     # 6in drafting-slop budget. Real walls (with real doorway gaps) go into
     # the model; room detection uses a SEPARATE, door-width-bridged graph
     # (Task 11's space_boundary_graph) purely for polygonization.
+    graph = resolve_junctions(walls)
+    spaces = detect_spaces(space_boundary_graph(walls))
+
+    model = BuildingModel(
+        walls=graph.walls,
+        junctions=graph.junctions,
+        unresolved=graph.unresolved,
+        spaces=spaces,
+        scale=scale,
+        layer_decisions=classification,
+        source_path=ps.source_path,
+        source_sha256=ps.source_sha256,
+        wall_height_ft=wall_height_ft,
+    )
+    return replace(model, issues=validate(model))
+
+
+def extract_from_dxf(ps: PrimitiveSet, classifier: LayerClassifier, *,
+                     units_per_foot: float,
+                     wall_height_ft: float = 10.0) -> BuildingModel:
+    """DXF path: units are known, so scale resolution is skipped entirely.
+
+    The PDF path infers units_per_foot from printed dimension text and gates
+    it on R1. A DXF declares its units, so there is nothing to infer and no
+    residual to gate -- ScaleResult records the supplied value with an empty
+    residual set.
+
+    Mirrors extract_from_primitives, minus resolve_scale/candidate_runs/
+    extract_dimensions. `stats` is not a parameter here (unlike
+    extract_from_primitives): the caller -- the CLI -- pairs this with a
+    classifier that already carries a precomputed Classification, built
+    against the fuller build_dxf_inventory stats, since this function only
+    has `ps` and cannot build that DXF-aware inventory itself.
+    """
+    stats = build_inventory(ps)
+    classification = classifier.classify(stats)
+    wall_layers = layers_for_roles(classification, WALL_ROLES)
+    if not wall_layers:
+        raise ValueError(
+            "no layers were classified as walls. If a classification was "
+            "served from the cache it may be responsible; re-run with "
+            "--no-cache to force a fresh call.")
+
+    scale = ScaleResult(units_per_foot=units_per_foot, convention="clear",
+                        residuals_in=(), max_residual_in=0.0,
+                        matched_count=0, total_dimensions=0)
+    walls = detect_walls_paired_lines(ps, wall_layers, scale.units_per_foot)
+
+    # See extract_from_primitives for why this graph split exists: real
+    # walls (with real doorway gaps) here, a door-width-bridged graph for
+    # room detection.
     graph = resolve_junctions(walls)
     spaces = detect_spaces(space_boundary_graph(walls))
 
