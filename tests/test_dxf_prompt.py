@@ -24,6 +24,26 @@ def test_lineweight_and_linetype_are_rendered():
     assert "35" in out and "HIDDEN" in out
 
 
+def test_lineweight_minus_3_renders_as_default_not_number():
+    """The DXF sentinel -3 means 'inherits, no signal'. It must render as the
+    word 'default', never as the literal '-3'. Almost every layer in real
+    client drawings carries -3; if it rendered as a number, the model would
+    confuse missing information for a measurement."""
+    s = (_s("inherited", lineweight=-3),)
+    out = build_dxf_user_prompt(s)
+    assert "default" in out.lower()
+    assert "-3" not in out
+
+
+def test_lineweight_none_renders_as_default_not_missing():
+    """Absent lineweight (None) also means 'no signal', like -3. It must
+    render as 'default', not be omitted or appear as None."""
+    s = (_s("unspecified", lineweight=None),)
+    out = build_dxf_user_prompt(s)
+    assert "default" in out.lower()
+    assert "-3" not in out
+
+
 def test_layer_names_are_json_quoted():
     """Names contain spaces: 'COLUM HATCH', 'DB TO SHAFT CONDUIT'."""
     out = build_dxf_user_prompt((_s("COLUM HATCH"),))

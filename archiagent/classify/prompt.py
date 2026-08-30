@@ -192,6 +192,12 @@ def _dxf_row(s: LayerStats) -> str:
 
 
 def build_dxf_user_prompt(stats: tuple[LayerStats, ...]) -> str:
+    """Render the DXF inventory as one row per layer.
+
+    Layer names are JSON-quoted so names with spaces (e.g. "COLUM HATCH",
+    "DB TO SHAFT CONDUIT") are unambiguous. DXF-specific fields include
+    entity mix, lineweight, linetype, and layer state flags.
+    """
     rows = "\n".join(_dxf_row(s) for s in stats)
     return (f"INVENTORY ({len(stats)} layers)\n{rows}\n\n"
             "Classify every layer listed above.")
