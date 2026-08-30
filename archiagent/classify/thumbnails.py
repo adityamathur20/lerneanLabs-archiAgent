@@ -19,15 +19,28 @@ class RenderUnavailable(RuntimeError):
     """matplotlib and/or Pillow are not installed."""
 
 
+# A module-level constant, not an inline literal, so a test can assert on it
+# directly instead of needing to actually uninstall matplotlib/Pillow to
+# trigger this path. This message is user-facing: dxf_classifier.py catches
+# RenderUnavailable and turns it into a layer_escalation_skipped Issue,
+# which the CLI's -v now prints (Task 7's on_issue wiring), so stale advice
+# here reaches a real terminal, not just a log nobody reads. It once said
+# "run without --vision" -- a flag that was renamed and had its default
+# inverted (vision is ON by default now); the flag that turns it off is
+# --no_vision.
+RENDER_UNAVAILABLE_MSG = (
+    "the vision stage needs the optional matplotlib and Pillow "
+    "dependencies to render layer thumbnails; install the 'vision' extra, "
+    "or pass --no_vision to turn the vision stage off")
+
+
 def _backend():
     try:
         import matplotlib
         matplotlib.use("Agg")
         from ezdxf.addons.drawing.matplotlib import qsave
     except Exception as exc:                       # noqa: BLE001 - reported, not raised
-        raise RenderUnavailable(
-            "layer thumbnails need matplotlib and Pillow; install the "
-            "'vision' extra, or run without --vision") from exc
+        raise RenderUnavailable(RENDER_UNAVAILABLE_MSG) from exc
     return qsave
 
 

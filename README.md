@@ -7,34 +7,60 @@ This repo will hold system/solution:
 
 ## Usage
 
-```
-python -m archiagent PDF OUT_IFC [options]
+The input is a floorplan PDF or DXF, given by a named flag -- exactly one of
+`--pdfFilePath` / `--dxfFilePath` is required. Output goes under
+`--outputDir`, a DIRECTORY: the filename is derived from the input's own
+name (`plan.pdf` -> `plan.ifc`, `drawing.dxf` -> `drawing.ifc`), and the run
+refuses to overwrite an existing output file rather than silently replacing
+it.
 
-  --page N            page index (default 0)
-  --height FT         wall height in feet (default 10.0)
-  --walls NAME...     skip the LLM; treat these layers as walls
-  --provider NAME     anthropic (default) | openai
-  --model NAME        model id (default claude-haiku-4-5)
-  --inspect           print the layer inventory and exit
-  --classify-only     classify, print the roles, and exit
-  --no-cache          ignore the classification cache
-  -v                  report issues by severity
+```
+python -m archiagent --pdfFilePath PDF --outputDir DIR [options]
+python -m archiagent --dxfFilePath DXF --outputDir DIR [options]
+
+  --pdfFilePath PATH   input floorplan PDF (mutually exclusive with --dxfFilePath)
+  --dxfFilePath PATH   input floorplan DXF (mutually exclusive with --pdfFilePath)
+  --outputDir DIR      directory to write the .ifc into (required unless
+                        --inspect or --classify-only)
+  --page N             PDF only: page index (default 0)
+  --height FT          wall height in feet (default 10.0)
+  --walls NAME...      skip the LLM; treat these layers as walls
+  --provider NAME      anthropic (default) | openai
+  --model NAME         model id (default claude-haiku-4-5)
+  --no_vision          DXF only: disable stage 2 (image) escalation
+  --units-per-foot N   DXF only: override the drawing's declared units
+                        (12 for inches, 1 for feet, 304.8 for mm)
+  --inspect            print the layer inventory and exit
+  --classify-only      classify, print the roles, and exit
+  --no-cache           ignore the classification cache
+  -v                   report issues by severity
 ```
 
-`OUT_IFC` must appear before `--walls` -- `--walls` takes one or more layer
-names and consumes every argument after it, so an `OUT_IFC` placed after
-`--walls` gets read in as a layer name instead.
+**Vision is on by default for DXF drawings.** Low-confidence layers get a
+second look: by default, rendered images of the drawing are sent to the
+configured LLM provider (the vision / stage 2 escalation). Pass
+`--no_vision` to keep every call text-only, or set `ARCHIAGENT_VISION=0`;
+an explicit `--no_vision` wins over the environment variable either way.
 
 Exit codes: `0` success, `1` pipeline error (scale gate, no walls, unreadable
-PDF), `2` LLM unavailable, `3` bad usage.
+drawing), `2` LLM unavailable, `3` bad usage.
 
 ### Without an API key
 
 `--inspect` and `--walls` need no credentials and no network:
 
 ```bash
-python -m archiagent plan.pdf --inspect
-python -m archiagent plan.pdf out.ifc --walls WALLS PARTITION
+python -m archiagent --pdfFilePath plan.pdf --inspect
+python -m archiagent --pdfFilePath plan.pdf --outputDir out/ \
+    --walls WALLS PARTITION
+```
+
+### DXF example
+
+```bash
+python -m archiagent --dxfFilePath drawing.dxf --inspect
+python -m archiagent --dxfFilePath drawing.dxf --outputDir out/ \
+    --walls WALLS --no_vision
 ```
 
 ### Configuration

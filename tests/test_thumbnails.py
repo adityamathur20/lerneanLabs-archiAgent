@@ -81,6 +81,20 @@ def test_output_stays_inside_the_cache_dir(tmp_path):
     assert all(cache in v.parents for v in per_layer.values())
 
 
+def test_render_unavailable_message_matches_the_current_flag():
+    """RenderUnavailable's message is user-facing: dxf_classifier.py turns
+    it into a layer_escalation_skipped Issue, and the CLI's -v prints that
+    to a real terminal. It once told the user to "run without --vision" --
+    a flag that was renamed to --no_vision (and had its default flipped to
+    vision-on). Asserting the CURRENT flag is named, and the OLD one is
+    not, is what would have caught that drift."""
+    from archiagent.classify.thumbnails import RENDER_UNAVAILABLE_MSG
+    assert "--no_vision" in RENDER_UNAVAILABLE_MSG
+    assert "--vision" not in RENDER_UNAVAILABLE_MSG
+    assert "matplotlib" in RENDER_UNAVAILABLE_MSG
+    assert "Pillow" in RENDER_UNAVAILABLE_MSG
+
+
 def test_render_unavailable_propagates(tmp_path, monkeypatch):
     """RenderUnavailable from missing matplotlib/Pillow must propagate, not be swallowed."""
     from archiagent.classify.thumbnails import RenderUnavailable
