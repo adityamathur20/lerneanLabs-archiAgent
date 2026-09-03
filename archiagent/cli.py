@@ -40,7 +40,7 @@ from archiagent.classify.dxf_inventory import build_dxf_inventory
 from archiagent.classify.inventory import build_inventory
 from archiagent.classify.layers import (Classification, LayerClassifier,
                                         StubClassifier)
-from archiagent.classify.llm_classifier import LLMLayerClassifier
+from archiagent.classify.llm_classifier import MAX_TOKENS, LLMLayerClassifier
 from archiagent.classify.roles import Role
 from archiagent.ifc.author import author_ifc
 from archiagent.ingest.dxf_vector import DxfUnitsError, load_dxf
@@ -102,6 +102,14 @@ def _parser() -> argparse.ArgumentParser:
                         "LLM provider by default -- ARCHIAGENT_VISION=0 "
                         "has the same effect as this flag, but this flag "
                         "wins if both are given.")
+    p.add_argument("--max-tokens", type=int, default=None,
+                   metavar="N",
+                   help="cap on the model's reply length (default %d, or "
+                        "ARCHIAGENT_MAX_TOKENS). A drawing with many layers "
+                        "needs a bigger budget: the reply carries a role, a "
+                        "confidence and a reason for EVERY layer, and a reply "
+                        "cut short is a hard error, not a partial answer."
+                        % MAX_TOKENS)
     p.add_argument("--units-per-foot", type=float, default=None,
                    metavar="FLOAT",
                    help="DXF only: override the drawing's declared units "
@@ -170,9 +178,29 @@ def _classifier(args) -> LayerClassifier:
                                for name in args.walls})
 
     cfg = config_from_env(provider=args.provider, model=args.model)
-    inner = LLMLayerClassifier(build_client(cfg))
+    inner = LLMLayerClassifier(build_client(cfg), max_tokens=_max_tokens(args))
     return CachingClassifier(inner, model=cfg.model, provider=cfg.provider,
                              base_url=cfg.base_url, enabled=not args.no_cache)
+
+
+def _max_tokens(args) -> int:
+    """--max-tokens wins; then ARCHIAGENT_MAX_TOKENS; then the default.
+
+    A reply truncated by this cap is a hard error with no partial result,
+    so the knob has to be reachable from the command line: the right value
+    scales with the drawing's layer count, which we cannot know in advance.
+    """
+    if getattr(args, "max_tokens", None):
+        return int(args.max_tokens)
+    env = os.environ.get("ARCHIAGENT_MAX_TOKENS", "").strip()
+    if env:
+        try:
+            n = int(env)
+        except ValueError:
+            return MAX_TOKENS
+        if n > 0:
+            return n
+    return MAX_TOKENS
 
 
 def _vision_enabled(no_vision_flag: bool) -> bool:
@@ -206,6 +234,7 @@ def _dxf_classifier(args, dxf_path: str, on_issue=None) -> LayerClassifier:
     cfg = config_from_env(provider=args.provider, model=args.model)
     inner = DxfLayerClassifier(build_client(cfg), dxf_path,
                                vision=_vision_enabled(args.no_vision),
+                               max_tokens=_max_tokens(args),
                                on_issue=on_issue)
     return CachingClassifier(inner, model=cfg.model, provider=cfg.provider,
                              base_url=cfg.base_url, enabled=not args.no_cache)

@@ -75,10 +75,12 @@ class DxfLayerClassifier:
 
     def __init__(self, client: LLMClient, dxf_path: str | Path, *,
                 vision: bool = True, cache_dir: str | Path | None = None,
+                max_tokens: int = MAX_TOKENS,
                 on_issue: Callable[[object], None] | None = None) -> None:
         self._client = client
         self._dxf_path = dxf_path
         self._vision = vision
+        self._max_tokens = max_tokens
         self._cache_dir = (Path(cache_dir) if cache_dir is not None
                            else _default_cache_dir(dxf_path))
         self._on_issue = on_issue
@@ -88,7 +90,7 @@ class DxfLayerClassifier:
             system=DXF_SYSTEM_PROMPT,
             user=build_dxf_user_prompt(stats),
             schema=response_schema(),
-            max_tokens=MAX_TOKENS,
+            max_tokens=self._max_tokens,
         )
         stage1 = decisions_from_reply(reply, stats)
 
@@ -162,7 +164,7 @@ class DxfLayerClassifier:
                 user=build_dxf_user_prompt(escalated_stats),
                 schema=response_schema(),
                 images=images,
-                max_tokens=MAX_TOKENS,
+                max_tokens=self._max_tokens,
             )
             stage2 = decisions_from_reply(reply2, escalated_stats)
         except Exception as e:  # noqa: BLE001 - any failure keeps stage 1

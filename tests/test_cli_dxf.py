@@ -251,3 +251,75 @@ def test_vision_path_executes_end_to_end_through_the_cli(tmp_path, monkeypatch):
     assert [label for label, _ in fake.vision_kwargs["images"]] == \
         ["reference", "layer WALLS"]
     assert (out_dir / "t.ifc").exists()
+
+
+# --- --max-tokens -----------------------------------------------------
+#
+# A reply truncated by the token cap is a hard error with no partial
+# result, and the right budget scales with the drawing's layer count --
+# which the tool cannot know before it reads the file. Measured: a
+# 39-layer DXF overruns the 2048 default, because the reply carries a
+# role, a confidence and a reason for every single layer.
+
+def test_max_tokens_defaults_to_the_module_constant():
+    from archiagent.classify.llm_classifier import MAX_TOKENS
+    from archiagent.cli import _max_tokens, _parser
+    assert _max_tokens(_parser().parse_args(
+        ["--dxfFilePath", "x.dxf", "--inspect"])) == MAX_TOKENS
+
+
+def test_max_tokens_flag_overrides_the_default():
+    from archiagent.cli import _max_tokens, _parser
+    assert _max_tokens(_parser().parse_args(
+        ["--dxfFilePath", "x.dxf", "--inspect", "--max-tokens", "16384"])) == 16384
+
+
+def test_max_tokens_env_var_is_honoured(monkeypatch):
+    from archiagent.cli import _max_tokens, _parser
+    monkeypatch.setenv("ARCHIAGENT_MAX_TOKENS", "8000")
+    assert _max_tokens(_parser().parse_args(
+        ["--dxfFilePath", "x.dxf", "--inspect"])) == 8000
+
+
+def test_max_tokens_flag_wins_over_the_env_var(monkeypatch):
+    from archiagent.cli import _max_tokens, _parser
+    monkeypatch.setenv("ARCHIAGENT_MAX_TOKENS", "8000")
+    assert _max_tokens(_parser().parse_args(
+        ["--dxfFilePath", "x.dxf", "--inspect", "--max-tokens", "16384"])) == 16384
+
+
+def test_a_junk_env_var_falls_back_rather_than_crashing(monkeypatch):
+    from archiagent.classify.llm_classifier import MAX_TOKENS
+    from archiagent.cli import _max_tokens, _parser
+    monkeypatch.setenv("ARCHIAGENT_MAX_TOKENS", "not-a-number")
+    assert _max_tokens(_parser().parse_args(
+        ["--dxfFilePath", "x.dxf", "--inspect"])) == MAX_TOKENS
+
+
+def test_the_budget_actually_reaches_the_client(tmp_path, monkeypatch):
+    """The flag is worthless if it stops at the CLI boundary."""
+    import ezdxf
+    from archiagent.cli import main
+
+    doc = ezdxf.new(); doc.header["$INSUNITS"] = 1
+    doc.layers.add("WALLS", color=7)
+    msp = doc.modelspace()
+    for y in (0, 96):
+        msp.add_line((0, y), (240, y), dxfattribs={"layer": "WALLS"})
+    d = tmp_path / "t.dxf"; doc.saveas(d)
+
+    seen = {}
+
+    class Recorder:
+        def classify_json(self, **kw):
+            seen["max_tokens"] = kw["max_tokens"]
+            return {"layers": [{"name": "WALLS", "role": "wall_structural",
+                                "confidence": 0.9, "reason": "x"}]}
+
+        def classify_json_vision(self, **kw):
+            return {"layers": []}
+
+    monkeypatch.setattr("archiagent.cli.build_client", lambda cfg: Recorder())
+    main(["--dxfFilePath", str(d), "--classify-only",
+          "--max-tokens", "16384", "--no-cache", "--no_vision"])
+    assert seen["max_tokens"] == 16384
