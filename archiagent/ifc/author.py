@@ -36,6 +36,9 @@ FT = 0.3048  # metres per foot; IFC is authored in SI
 run = ifcopenshell.api.run
 
 
+SLAB_THICKNESS_FT = 0.5   # 6in; the slab hangs below storey level
+
+
 def author_ifc(model: BuildingModel, out_path: str | Path) -> Path:
     out_path = Path(out_path)
     f = ifcopenshell.file(schema="IFC4")
@@ -152,6 +155,25 @@ def author_ifc(model: BuildingModel, out_path: str | Path) -> Path:
         # walls' own start/end points), so place the space at the identity
         # origin rather than offsetting it like a wall's local profile.
         sp.ObjectPlacement = f.createIfcLocalPlacement(
+            None,
+            f.createIfcAxis2Placement3D(
+                f.createIfcCartesianPoint((0.0, 0.0, 0.0))))
+
+        # The floor under this room. Until now the model authored walls and
+        # spaces and nothing else, so a loaded model had no floor to stand on.
+        # One slab per room rather than one per building: the room boundary is
+        # already computed here, and Phase 2 wants to give different rooms
+        # different finishes.
+        slab = run("root.create_entity", f, ifc_class="IfcSlab",
+                   name=f"F{i:03d}", predefined_type="FLOOR")
+        run("spatial.assign_container", f, products=[slab],
+            relating_structure=storey)
+        slab_solid = sb.extrude(sb.polyline(points, closed=True),
+                                magnitude=SLAB_THICKNESS_FT * FT,
+                                extrusion_vector=(0.0, 0.0, -1.0))
+        run("geometry.assign_representation", f, product=slab,
+            representation=sb.get_representation(body, [slab_solid]))
+        slab.ObjectPlacement = f.createIfcLocalPlacement(
             None,
             f.createIfcAxis2Placement3D(
                 f.createIfcCartesianPoint((0.0, 0.0, 0.0))))
