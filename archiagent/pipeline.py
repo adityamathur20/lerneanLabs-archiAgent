@@ -10,7 +10,8 @@ from archiagent.classify.layers import (WALL_ROLES, LayerClassifier,
                                         layers_for_roles)
 from archiagent.geometry.junctions import resolve_junctions
 from archiagent.geometry.spaces import detect_spaces, space_boundary_graph
-from archiagent.geometry.walls import detect_walls_paired_lines
+from archiagent.geometry.walls import (detect_walls_paired_lines,
+                                       reject_ladder_runs)
 from archiagent.ifc.author import author_ifc
 from archiagent.ingest.pdf_vector import load_pdf
 from archiagent.model import BuildingModel, Issue
@@ -44,6 +45,7 @@ def extract_from_primitives(ps: PrimitiveSet, classifier: LayerClassifier,
 
     scale = resolve_scale(extract_dimensions(ps), candidate_runs(ps, wall_layers))
     walls = detect_walls_paired_lines(ps, wall_layers, scale.units_per_foot)
+    walls, treads = reject_ladder_runs(walls)
 
     # The wall graph is a forest: every room has a door, and a door is a
     # real gap that resolve_junctions correctly refuses to close beyond its
@@ -64,7 +66,7 @@ def extract_from_primitives(ps: PrimitiveSet, classifier: LayerClassifier,
         source_sha256=ps.source_sha256,
         wall_height_ft=wall_height_ft,
     )
-    return replace(model, issues=validate(model))
+    return replace(model, issues=validate(model) + _tread_issues(treads))
 
 
 def extract_from_dxf(ps: PrimitiveSet, classifier: LayerClassifier, *,
@@ -97,6 +99,7 @@ def extract_from_dxf(ps: PrimitiveSet, classifier: LayerClassifier, *,
                         residuals_in=(), max_residual_in=0.0,
                         matched_count=0, total_dimensions=0)
     walls = detect_walls_paired_lines(ps, wall_layers, scale.units_per_foot)
+    walls, treads = reject_ladder_runs(walls)
 
     # See extract_from_primitives for why this graph split exists: real
     # walls (with real doorway gaps) here, a door-width-bridged graph for
@@ -115,7 +118,7 @@ def extract_from_dxf(ps: PrimitiveSet, classifier: LayerClassifier, *,
         source_sha256=ps.source_sha256,
         wall_height_ft=wall_height_ft,
     )
-    return replace(model, issues=validate(model))
+    return replace(model, issues=validate(model) + _tread_issues(treads))
 
 
 def extract(pdf_path: str | Path, classifier: LayerClassifier, page: int = 0,
@@ -129,3 +132,18 @@ def run_pipeline(pdf_path: str | Path, classifier: LayerClassifier,
                  ) -> tuple[Path, tuple[Issue, ...]]:
     model = extract(pdf_path, classifier, page=page)
     return author_ifc(model, out_ifc), model.issues
+
+
+def _tread_issues(treads: tuple) -> tuple[Issue, ...]:
+    """Report rejected tread runs. A silent drop would look like a detector
+    bug the next time someone counts walls."""
+    if not treads:
+        return ()
+    by_layer: dict[str, int] = {}
+    for w in treads:
+        by_layer[w.source_layer] = by_layer.get(w.source_layer, 0) + 1
+    return tuple(
+        Issue("info", layer, "tread_run_rejected",
+              f"{n} evenly-spaced parallel runs on layer {layer!r} were "
+              "dropped as stair treads or hatch, not walls")
+        for layer, n in sorted(by_layer.items()))
