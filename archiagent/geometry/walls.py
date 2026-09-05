@@ -151,7 +151,9 @@ def detect_walls_paired_lines(ps: PrimitiveSet, wall_layers: set[str],
 # of rooms, a corridor -- sit feet apart. Treads sit inches apart, and they
 # are evenly spaced because that is what makes a staircase climbable.
 LADDER_MIN_RUN = 4       # a stair has many treads; two parallel walls are normal
-LADDER_MAX_SPACING_IN = 18.0
+LADDER_MAX_SPACING_IN = 30.0   # measured: Floor Plan.dxf's treads pair at 22in,
+                               # not the ~11in tread going, because _pair_family
+                               # pairs a tread's two drawn edges across the step
 LADDER_SPACING_CV = 0.15  # stdev/mean; treads are uniform by construction
 
 
