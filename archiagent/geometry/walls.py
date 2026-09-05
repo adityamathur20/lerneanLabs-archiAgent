@@ -54,7 +54,17 @@ def _pair_family(family: list[tuple[float, float, float, str]],
         for j in order[pos + 1:]:
             if j in used:
                 continue
-            b_lo, b_hi, b_off, _ = family[j]
+            b_lo, b_hi, b_off, b_layer = family[j]
+            if b_layer != a_layer:
+                # A wall is built from ONE layer's own geometry. Pairing
+                # across layers invents walls that exist on neither: on
+                # PLAN.dxf it paired stair lines with wall lines, so a layer
+                # named sSTAIR yielded 5 walls when its own geometry yields
+                # 2. It also makes layer classification meaningless -- you
+                # could classify every layer correctly and still get stair
+                # walls, because the pairing reaches across into layers you
+                # never approved.
+                continue
             thickness = abs(b_off - a_off)
             if thickness > max_t_ft:
                 break  # sorted by offset, so no later j can be farther
