@@ -9,6 +9,8 @@ def _dxf(tmp_path, insunits=1, name="t.dxf"):
     msp = doc.modelspace()
     for y in (0, 96):                       # two faces 8in apart -> one wall
         msp.add_line((0, y), (240, y), dxfattribs={"layer": "WALLS"})
+    for y in (400, 408):                    # a second wall on its own layer
+        msp.add_line((0, y), (240, y), dxfattribs={"layer": "PARTITION"})
     p = tmp_path / name
     doc.saveas(p)
     return p
@@ -169,8 +171,14 @@ def test_classifier_reported_issues_reach_cli_output(tmp_path, monkeypatch,
     get skipped for "vision is off", and that Issue must show up under -v.
     """
     d = _dxf(tmp_path)
+    # PARTITION is confident, so the run produces a model; WALLS is doubtful,
+    # so it escalates -- and with vision off, that escalation is skipped and
+    # must be reported. Before the wall-confidence floor existed this test got
+    # away with a single 0.5-confidence layer building the whole model.
     reply = {"layers": [{"name": "WALLS", "role": "wall_structural",
-                         "confidence": 0.5, "reason": "unsure"}]}
+                         "confidence": 0.5, "reason": "unsure"},
+                        {"name": "PARTITION", "role": "wall_structural",
+                         "confidence": 0.95, "reason": "clear"}]}
     monkeypatch.setattr("archiagent.cli.build_client",
                         lambda cfg: _FakeClient(reply))
 

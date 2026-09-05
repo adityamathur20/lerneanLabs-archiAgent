@@ -45,6 +45,14 @@ Classification = tuple[LayerDecision, ...]
 
 WALL_ROLES: frozenset[Role] = frozenset({Role.WALL_STRUCTURAL, Role.WALL_PARTITION})
 
+# A layer the model was 30% sure about used to contribute geometry exactly as
+# heavily as one it was 95% sure about: layers_for_roles defaults min_confidence
+# to 0.0 and the pipeline passed nothing. Below this floor a layer is reported
+# rather than silently built into the model. The value is escalate.py's
+# CONFIDENCE_FLOOR -- the same doubt that sends a layer to the vision stage is
+# the doubt that keeps it out of the geometry.
+WALL_CONFIDENCE_FLOOR = 0.70
+
 
 class LayerClassifier(Protocol):
     def classify(self, stats: tuple[LayerStats, ...]) -> Classification:

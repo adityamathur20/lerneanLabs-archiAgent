@@ -6,8 +6,8 @@ from dataclasses import replace
 from pathlib import Path
 
 from archiagent.classify.inventory import LayerStats, build_inventory
-from archiagent.classify.layers import (WALL_ROLES, LayerClassifier,
-                                        layers_for_roles)
+from archiagent.classify.layers import (WALL_CONFIDENCE_FLOOR, WALL_ROLES,
+                                        LayerClassifier, layers_for_roles)
 from archiagent.geometry.junctions import resolve_junctions
 from archiagent.geometry.spaces import detect_spaces, space_boundary_graph
 from archiagent.geometry.walls import (detect_walls_paired_lines,
@@ -36,12 +36,10 @@ def extract_from_primitives(ps: PrimitiveSet, classifier: LayerClassifier,
     if stats is None:
         stats = build_inventory(ps)
     classification = classifier.classify(stats)
-    wall_layers = layers_for_roles(classification, WALL_ROLES)
+    wall_layers = layers_for_roles(classification, WALL_ROLES,
+                                   min_confidence=WALL_CONFIDENCE_FLOOR)
     if not wall_layers:
-        raise ValueError(
-            "no layers were classified as walls. If a classification was "
-            "served from the cache it may be responsible; re-run with "
-            "--no-cache to force a fresh call.")
+        _no_wall_layers(classification)
 
     scale = resolve_scale(extract_dimensions(ps), candidate_runs(ps, wall_layers))
     walls = detect_walls_paired_lines(ps, wall_layers, scale.units_per_foot)
@@ -88,12 +86,10 @@ def extract_from_dxf(ps: PrimitiveSet, classifier: LayerClassifier, *,
     """
     stats = build_inventory(ps)
     classification = classifier.classify(stats)
-    wall_layers = layers_for_roles(classification, WALL_ROLES)
+    wall_layers = layers_for_roles(classification, WALL_ROLES,
+                                   min_confidence=WALL_CONFIDENCE_FLOOR)
     if not wall_layers:
-        raise ValueError(
-            "no layers were classified as walls. If a classification was "
-            "served from the cache it may be responsible; re-run with "
-            "--no-cache to force a fresh call.")
+        _no_wall_layers(classification)
 
     scale = ScaleResult(units_per_foot=units_per_foot, convention="clear",
                         residuals_in=(), max_residual_in=0.0,
@@ -147,3 +143,24 @@ def _tread_issues(treads: tuple) -> tuple[Issue, ...]:
               f"{n} evenly-spaced parallel runs on layer {layer!r} were "
               "dropped as stair treads or hatch, not walls")
         for layer, n in sorted(by_layer.items()))
+
+
+def _no_wall_layers(classification) -> None:
+    """Raise, distinguishing "nothing looked like a wall" from "something did
+    but we did not believe it". They are different problems: the first wants a
+    different drawing or --walls, the second wants --vision or a better model."""
+    unsure = sorted(
+        (d for d in classification
+         if d.role in WALL_ROLES and d.confidence < WALL_CONFIDENCE_FLOOR),
+        key=lambda d: -d.confidence)
+    if unsure:
+        named = ", ".join(f"{d.layer!r} ({d.confidence:.0%})" for d in unsure[:5])
+        raise ValueError(
+            f"{len(unsure)} layer(s) were classified as walls but none reached "
+            f"the {WALL_CONFIDENCE_FLOOR:.0%} confidence floor: {named}. "
+            "Name them with --walls to use them anyway, or re-run without "
+            "--no_vision so the image stage can confirm them.")
+    raise ValueError(
+        "no layers were classified as walls. If a classification was "
+        "served from the cache it may be responsible; re-run with "
+        "--no-cache to force a fresh call.")
