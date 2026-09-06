@@ -10,7 +10,11 @@ from archiagent.classify.inventory import LayerStats
 from archiagent.classify.layers import Classification, WALL_ROLES
 from archiagent.classify.roles import Role
 
-ESCALATION_CAP = 6
+# Measured on Floor Plan.dxf (39 layers): a cap of 6 dropped 17 candidates,
+# including WALLS and RCC WALL -- real wall layers left unexamined. 20 covers
+# that drawing. Each escalated layer costs one rendered image in the vision
+# call, so this is a cost/coverage dial, not a correctness one.
+ESCALATION_CAP = 20
 CONFIDENCE_FLOOR = 0.70
 SHARE_FLOOR = 0.10
 
@@ -47,6 +51,7 @@ def escalation_candidates(decisions: Classification,
 
 
 def select_for_escalation(decisions: Classification,
-                          stats: tuple[LayerStats, ...]
+                          stats: tuple[LayerStats, ...],
+                          cap: int = ESCALATION_CAP
                           ) -> tuple[tuple[str, str], ...]:
-    return escalation_candidates(decisions, stats)[:ESCALATION_CAP]
+    return escalation_candidates(decisions, stats)[:cap]

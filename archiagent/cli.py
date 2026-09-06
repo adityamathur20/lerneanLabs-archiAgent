@@ -36,6 +36,7 @@ from pathlib import Path
 
 from archiagent.classify.cache import CachingClassifier
 from archiagent.classify.dxf_classifier import DxfLayerClassifier
+from archiagent.classify.escalate import ESCALATION_CAP
 from archiagent.classify.dxf_inventory import build_dxf_inventory
 from archiagent.classify.inventory import build_inventory
 from archiagent.classify.layers import (Classification, LayerClassifier,
@@ -110,6 +111,12 @@ def _parser() -> argparse.ArgumentParser:
                         "confidence and a reason for EVERY layer, and a reply "
                         "cut short is a hard error, not a partial answer."
                         % MAX_TOKENS)
+    p.add_argument("--maxEscalation", type=int, default=ESCALATION_CAP,
+                   metavar="N",
+                   help=f"DXF only: how many uncertain layers the vision stage "
+                        f"may examine (default {ESCALATION_CAP}). Each one costs "
+                        f"a rendered image in the request; layers beyond the cap "
+                        f"are reported but not examined.")
     p.add_argument("--units-per-foot", type=float, default=None,
                    metavar="FLOAT",
                    help="DXF only: override the drawing's declared units "
@@ -235,6 +242,7 @@ def _dxf_classifier(args, dxf_path: str, on_issue=None) -> LayerClassifier:
     inner = DxfLayerClassifier(build_client(cfg), dxf_path,
                                vision=_vision_enabled(args.no_vision),
                                max_tokens=_max_tokens(args),
+                               cap=args.maxEscalation,
                                on_issue=on_issue)
     return CachingClassifier(inner, model=cfg.model, provider=cfg.provider,
                              base_url=cfg.base_url, enabled=not args.no_cache)

@@ -72,12 +72,15 @@ def test_ordering_is_by_descending_entity_share():
 
 
 def test_cap_keeps_the_largest_and_drops_the_rest():
-    d = tuple(_d(f"L{i}", Role.FURNITURE, 0.5) for i in range(9))
-    s = tuple(_s(f"L{i}", (9 - i) / 100) for i in range(9))
-    assert len(escalation_candidates(d, s)) == 9
+    # Sized from ESCALATION_CAP rather than a literal, so raising the default
+    # ceiling does not silently turn this into a test of nothing.
+    n = ESCALATION_CAP + 3
+    d = tuple(_d(f"L{i:02}", Role.FURNITURE, 0.5) for i in range(n))
+    s = tuple(_s(f"L{i:02}", (n - i) / 100) for i in range(n))
+    assert len(escalation_candidates(d, s)) == n
     picked = select_for_escalation(d, s)
     assert len(picked) == ESCALATION_CAP
-    assert [n for n, _ in picked] == [f"L{i}" for i in range(ESCALATION_CAP)]
+    assert [x for x, _ in picked] == [f"L{i:02}" for i in range(ESCALATION_CAP)]
 
 
 def test_a_layer_escalates_once_even_when_several_triggers_fire():

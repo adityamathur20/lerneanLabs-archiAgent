@@ -76,11 +76,13 @@ class DxfLayerClassifier:
     def __init__(self, client: LLMClient, dxf_path: str | Path, *,
                 vision: bool = True, cache_dir: str | Path | None = None,
                 max_tokens: int = MAX_TOKENS,
+                cap: int = ESCALATION_CAP,
                 on_issue: Callable[[object], None] | None = None) -> None:
         self._client = client
         self._dxf_path = dxf_path
         self._vision = vision
         self._max_tokens = max_tokens
+        self._cap = cap
         self._cache_dir = (Path(cache_dir) if cache_dir is not None
                            else _default_cache_dir(dxf_path))
         self._on_issue = on_issue
@@ -95,7 +97,7 @@ class DxfLayerClassifier:
         stage1 = decisions_from_reply(reply, stats)
 
         uncapped = escalation_candidates(stage1, stats)
-        candidates = select_for_escalation(stage1, stats)
+        candidates = select_for_escalation(stage1, stats, self._cap)
         if not candidates:
             return stage1
 
@@ -108,7 +110,7 @@ class DxfLayerClassifier:
             self._report(
                 "warn", layer, "layer_escalation_skipped",
                 f"escalation trigger={trigger!r}: dropped by the escalation "
-                f"cap ({ESCALATION_CAP} candidates max)")
+                f"cap ({self._cap} candidates max)")
 
         if not self._vision:
             self._skip_all(candidates, "vision is off")
