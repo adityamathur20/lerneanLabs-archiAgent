@@ -15,6 +15,7 @@ classification.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
 
@@ -55,6 +56,9 @@ from archiagent.model import Issue
 DEFAULT_CACHE_DIR_NAME = Path(".archiagent-cache") / "thumbnails"
 
 
+VISION_BATCH_SIZE = 4
+
+
 def _default_cache_dir(dxf_path: str | Path) -> Path:
     return Path(dxf_path).resolve().parent / DEFAULT_CACHE_DIR_NAME
 
@@ -77,12 +81,14 @@ class DxfLayerClassifier:
                 vision: bool = True, cache_dir: str | Path | None = None,
                 max_tokens: int = MAX_TOKENS,
                 cap: int = ESCALATION_CAP,
+                batch_size: int = VISION_BATCH_SIZE,
                 on_issue: Callable[[object], None] | None = None) -> None:
         self._client = client
         self._dxf_path = dxf_path
         self._vision = vision
         self._max_tokens = max_tokens
         self._cap = cap
+        self._batch_size = batch_size
         self._cache_dir = (Path(cache_dir) if cache_dir is not None
                            else _default_cache_dir(dxf_path))
         self._on_issue = on_issue
@@ -150,39 +156,30 @@ class DxfLayerClassifier:
         if not rendered:
             return stage1
 
-        try:
-            images: list[tuple[str, bytes]] = [
-                ("reference", Path(ref_path).read_bytes())]
-            for name, _ in rendered:
-                images.append(
-                    (f"layer {name}", Path(layer_paths[name]).read_bytes()))
+        revised: dict[str, object] = {}
+        batches = _batches(rendered, self._batch_size)
 
-            rendered_names = {name for name, _ in rendered}
-            escalated_stats = tuple(s for s in stats
-                                    if s.name in rendered_names)
+        # One call per batch instead of one call carrying everything.
+        # Measured: 4 layers to a reasoning model took 7m18s, and a single
+        # call carrying 20 would exceed the SDK's 600s ceiling -- returning
+        # nothing at all, not a partial classification. Batches also mean one
+        # failure costs four layers instead of every one of them.
+        #
+        # Run them together: the batches are independent, so wall-clock is
+        # roughly one batch rather than the sum.
+        with ThreadPoolExecutor(max_workers=len(batches)) as pool:
+            futures = {pool.submit(self._vision_batch, batch, ref_path,
+                                   layer_paths, stats): batch
+                       for batch in batches}
+            for fut in as_completed(futures):
+                batch = futures[fut]
+                try:
+                    revised.update(fut.result())
+                except Exception as e:  # noqa: BLE001 - one batch, not the run
+                    self._skip_all(tuple(batch), f"stage 2 failed: {e}")
 
-            reply2 = self._client.classify_json_vision(
-                system=DXF_SYSTEM_PROMPT,
-                user=build_dxf_user_prompt(escalated_stats),
-                schema=response_schema(),
-                images=images,
-                max_tokens=self._max_tokens,
-            )
-            stage2 = decisions_from_reply(reply2, escalated_stats)
-        except Exception as e:  # noqa: BLE001 - any failure keeps stage 1
-            # Only the layers actually sent to stage 2 (`rendered`) get this
-            # Issue -- the ones missing a render already got a more precise
-            # reason above, and repeating this generic one for them would
-            # just be noise.
-            self._skip_all(rendered, f"stage 2 failed: {e}")
+        if not revised:
             return stage1
-
-        # Only layers stage 2 actually answered (source == "llm") splice
-        # over stage 1. A layer that was escalated but not answered keeps
-        # its stage 1 decision rather than being overwritten with
-        # decisions_from_reply's own "unanswered" default -- stage 2 must
-        # only ever improve on stage 1, never quietly downgrade it.
-        revised = {d.layer: d for d in stage2 if d.source == "llm"}
 
         out = []
         for d in stage1:
@@ -198,6 +195,26 @@ class DxfLayerClassifier:
             out.append(new)
         return tuple(out)
 
+    def _vision_batch(self, batch, ref_path, layer_paths,
+                     stats: tuple[LayerStats, ...]) -> dict:
+        """One vision call over one batch. Raises; the caller reports."""
+        images: list[tuple[str, bytes]] = [
+            ("reference", Path(ref_path).read_bytes())]
+        for name, _ in batch:
+            images.append((f"layer {name}", Path(layer_paths[name]).read_bytes()))
+
+        names = {name for name, _ in batch}
+        batch_stats = tuple(s for s in stats if s.name in names)
+        reply = self._client.classify_json_vision(
+            system=DXF_SYSTEM_PROMPT,
+            user=build_dxf_user_prompt(batch_stats),
+            schema=response_schema(),
+            images=images,
+            max_tokens=self._max_tokens,
+        )
+        return {d.layer: d for d in decisions_from_reply(reply, batch_stats)
+                if d.source == "llm"}
+
     def _skip_all(self, candidates: tuple[tuple[str, str], ...],
                  reason: str) -> None:
         for layer, trigger in candidates:
@@ -209,3 +226,19 @@ class DxfLayerClassifier:
         if self._on_issue is None:
             return
         self._on_issue(Issue(severity, entity, code, msg))
+
+
+def _batches(candidates, size: int) -> list[list]:
+    """Split into batches, keeping wall-role rivals together.
+
+    Every batch also carries the whole-drawing reference image, so a layer is
+    still judged against its drawing. But `competing_wall_layers` candidates
+    only mean anything SIDE BY SIDE -- the question is which of two confident
+    wall layers is really the walls -- so splitting them across batches would
+    destroy the comparison the trigger exists to make.
+    """
+    rivals = [c for c in candidates if c[1] == "competing_wall_layers"]
+    others = [c for c in candidates if c[1] != "competing_wall_layers"]
+    out = [rivals[i:i + size] for i in range(0, len(rivals), size)]
+    out += [others[i:i + size] for i in range(0, len(others), size)]
+    return [b for b in out if b]
