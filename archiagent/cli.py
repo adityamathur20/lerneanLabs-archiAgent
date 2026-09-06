@@ -111,6 +111,11 @@ def _parser() -> argparse.ArgumentParser:
                         "confidence and a reason for EVERY layer, and a reply "
                         "cut short is a hard error, not a partial answer."
                         % MAX_TOKENS)
+    p.add_argument("--timeout", type=float, default=None, metavar="SECONDS",
+                   help="how long to wait for the model (default: the SDK's "
+                        "600s, or ARCHIAGENT_LLM_TIMEOUT). A vision call "
+                        "carrying many rendered layers to a slow model can "
+                        "exceed that, and a timeout returns nothing at all.")
     p.add_argument("--maxEscalation", type=int, default=ESCALATION_CAP,
                    metavar="N",
                    help=f"DXF only: how many uncertain layers the vision stage "
@@ -184,7 +189,8 @@ def _classifier(args) -> LayerClassifier:
                                       MANUAL_WALL_CONFIDENCE)
                                for name in args.walls})
 
-    cfg = config_from_env(provider=args.provider, model=args.model)
+    cfg = config_from_env(provider=args.provider, model=args.model,
+                          timeout=args.timeout)
     inner = LLMLayerClassifier(build_client(cfg), max_tokens=_max_tokens(args))
     return CachingClassifier(inner, model=cfg.model, provider=cfg.provider,
                              base_url=cfg.base_url, enabled=not args.no_cache)
@@ -238,7 +244,8 @@ def _dxf_classifier(args, dxf_path: str, on_issue=None) -> LayerClassifier:
                                       MANUAL_WALL_CONFIDENCE)
                                for name in args.walls})
 
-    cfg = config_from_env(provider=args.provider, model=args.model)
+    cfg = config_from_env(provider=args.provider, model=args.model,
+                          timeout=args.timeout)
     inner = DxfLayerClassifier(build_client(cfg), dxf_path,
                                vision=_vision_enabled(args.no_vision),
                                max_tokens=_max_tokens(args),

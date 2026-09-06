@@ -33,7 +33,8 @@ _NO_SDK = (
 
 class OpenAICompatClient:
     def __init__(self, model: str, api_key: str | None = None,
-                 base_url: str | None = None) -> None:
+                 base_url: str | None = None,
+                 timeout: float | None = None) -> None:
         try:
             import openai
         except ImportError as e:  # pragma: no cover - environment-dependent
@@ -48,6 +49,8 @@ class OpenAICompatClient:
         kwargs = {"api_key": key}
         if base_url:
             kwargs["base_url"] = base_url
+        if timeout is not None:
+            kwargs["timeout"] = timeout
         self._client = openai.OpenAI(**kwargs)
 
     def classify_json(self, *, system: str, user: str, schema: dict,
