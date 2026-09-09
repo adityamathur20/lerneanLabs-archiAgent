@@ -363,6 +363,18 @@ independently editable.
 layer role fixes dozens of walls at once — which is why provenance
 (§8) is mandatory.
 
+Implemented in W1 as `LLMLayerClassifier`
+(`archiagent/classify/llm_classifier.py`), backed by the `LLMClient` port in
+`archiagent/llm/`. `StubClassifier` is retained for tests and for the CLI's
+`--walls` bypass. Default model `claude-haiku-4-5`; the provider is
+configurable, and `--inspect` / `--walls` work with no credentials at all.
+See `docs/superpowers/specs/2026-08-23-w1-llm-layer-classification-design.md`
+and the measured results in
+`docs/superpowers/reports/2026-08-23-w1-verification.md`. Live-provider
+verification is outstanding — no API credentials were available when that
+report was written — see its "Outstanding: live verification" section for
+the commands still needed to close Task 8.
+
 ### Stage 2 — Scale resolution
 
 **Purpose:** establish the exact source-unit → foot factor.
@@ -647,8 +659,12 @@ Stages 0–7  ──▶  assembled model  ──▶  Stage 8  ──▶  model.i
              "residuals_in": [0.2, 0.0, 0.7, 0.5], "max_residual_in": 0.7,
              "confidence": 0.97 },
 
-  "layer_roles": { "WALLS": "wall_structural", "WALL HATCH": "wall_structural",
-                   "BEAM": "beam_overhead", "0": "ignore" },
+  "layer_decisions": [
+    { "layer": "WALLS", "role": "wall_structural", "confidence": 0.98,
+      "reason": "solid double-line pair on a layer named WALLS",
+      "source": "llm" },
+    { "layer": "0", "role": "ignore", "confidence": 0.0, "reason": "",
+      "source": "manual" } ],
 
   "levels": [ { "id": "L0", "ifc_guid": "1FdJRn48X10RjxNO4d$wwl",
                 "name": "Ground Floor", "elevation": 0.0, "height": 12.0 } ],
@@ -673,6 +689,12 @@ Stages 0–7  ──▶  assembled model  ──▶  Stage 8  ──▶  model.i
                 "msg": "endpoint 1.8in from nearest wall, above snap tolerance" } ]
 }
 ```
+
+`layer_decisions` carries one `LayerDecision` per layer — role,
+confidence, reason and source. The earlier `layer_roles: dict[str, str]`
+discarded the classifier's confidence and had no field for a reason, which
+left the W2 review surface with nothing to display. See
+`docs/superpowers/specs/2026-08-23-w1-llm-layer-classification-design.md` §3.
 
 ### Why provenance is non-negotiable
 

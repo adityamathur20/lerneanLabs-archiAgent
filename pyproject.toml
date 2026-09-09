@@ -7,17 +7,23 @@ dependencies = [
     "shapely>=2.1",
     "networkx>=3.4",
     "ifcopenshell>=0.8.5",
+    "ezdxf>=1.4",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+llm = ["anthropic>=1.0", "openai>=1.0"]
+vision = ["matplotlib>=3.8", "Pillow>=10"]
+
+[project.scripts]
+archiagent = "archiagent.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["archiagent"]
+[tool.setuptools.packages.find]
+include = ["archiagent*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

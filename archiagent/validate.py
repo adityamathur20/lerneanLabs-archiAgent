@@ -31,6 +31,13 @@ def validate(model: BuildingModel) -> tuple[Issue, ...]:
             f"{MAX_RESIDUAL_IN}in gate; it may measure non-wall geometry, "
             "or the scale may be wrong"))
 
+    for d in model.layer_decisions:
+        if d.source == "default":
+            issues.append(Issue(
+                "warn", d.layer, "layer_unclassified",
+                "the classifier returned no role for this layer; it was "
+                "defaulted to ignore and contributes no geometry"))
+
     for pt in model.unresolved:
         issues.append(Issue(
             "error", f"node@{pt[0]:.2f},{pt[1]:.2f}", "unresolved_junction",

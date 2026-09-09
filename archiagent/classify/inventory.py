@@ -29,6 +29,14 @@ class LayerStats:
     length_p10: float
     length_p50: float
     length_p90: float
+    # DXF-only. The PDF front-end leaves these at their defaults.
+    entity_mix: tuple[tuple[str, int], ...] = ()   # ("LINE", 812), top 5
+    entity_share: float = 0.0                      # fraction of all entities
+    lineweight: int | None = None                  # DXF units, -3 = default
+    linetype: str = ""
+    is_off: bool = False
+    is_frozen: bool = False
+    extent_ratio: float = 0.0                      # layer bbox area / drawing bbox area
 
 
 def _percentile(sorted_vals: list[float], q: float) -> float:
