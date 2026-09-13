@@ -4,12 +4,8 @@ Pure functions only -- no client, no network, no disk. Keeping the prompt
 here means it can be reviewed and diffed on its own, and it is the template
 W3 (glyph identification) and W5 (symbol naming) will copy.
 
-The layer table is deliberately compact: the whole inventory has to fit in
-one cheap call, and the statistics are already strongly discriminative.
-Measured on the demolition plan, walls are 100% axis-aligned with a median
-segment length of 23.2 units against ~1.1 for furniture and 0.0 for hatch.
-Bounding-box width and height are included because they are the main signal
-separating a title block or sheet border from plan geometry.
+The compact table contains candidate evidence, not sufficient evidence for
+individual element classification. Mixed layers require local interpretation.
 """
 
 from __future__ import annotations
@@ -38,15 +34,17 @@ unknown at this stage, so only RELATIVE magnitudes are meaningful):
   colors  dominant RGB colours in 0-1, most common first
 
 What the numbers usually mean:
-- Walls: near 100% axis-aligned, p50 long relative to other layers, bounding
-  box covering most of the plan. A drawing often splits its wall network
+- Walls: long connected boundaries and repeated thickness can be useful
+  evidence. Walls may be angled or curved: axis alignment is not required.
+  A drawing often splits its wall network
   across several layers, so classify EVERY layer carrying wall geometry as a
   wall rather than choosing a single best candidate.
 - Hatch (wall poche, fill): very many segments that are either near-zero
   length (degenerate points) or short diagonal strokes at one consistent
-  angle. HATCH IS NOT A WALL. Wall detection pairs opposing wall FACES, and
-  feeding it hatch strokes corrupts the drawing's recovered scale. Classify
-  hatch as annotation.
+  angle. Individual hatch strokes are not wall faces. Retain hatch boundaries
+  and fill membership as wall/column region evidence for later geometry
+  reconstruction. Use annotation for hatch-only layers in this vocabulary;
+  do not discard their source evidence or misclassify a mixed wall layer.
 - Dimensions: many short segments (ticks and arrowheads) mixed with long
   thin runs, concentrated around the edges of the plan.
 - Furniture, fixtures, vehicles, landscape: low axis%, short p50, often a
@@ -60,9 +58,10 @@ Rules:
   nothing fits, including empty, construction and scratch layers.
 - Return one entry for EVERY layer you are given, with the name copied
   verbatim, including its exact case and any spaces.
-- `confidence` is your calibrated probability that the role is correct. Do
-  not inflate it. 0.5 means genuinely unsure, and being unsure is useful --
-  a human reviews low-confidence layers.
+- `confidence` is an uncalibrated evidence-strength score between 0 and 1,
+  not a probability of correctness. Reduce it for conflicting or mixed
+  evidence. Mention mixed content in the reason; a dominant layer role must
+  not be applied to every entity. Do not claim that a human reviewed it.
 - `reason` is one short clause citing the numbers that decided it.
 """
 
@@ -108,9 +107,11 @@ You are given one row per layer. Use every column:
 - name: the drafter's own label. Usually the strongest signal, but CAD
   offices do not follow the AIA/NCS standard -- expect names like
   "NEW WALLS", "walll", "COLUM HATCH", "win", "FURN".
-- entities: counts by DXF entity type. ARC-heavy layers are usually doors
-  (door swings are arcs). MTEXT/TEXT-heavy layers are labels. DIMENSION
-  means a dimension layer. HATCH means fill, not wall faces.
+- entities: counts by DXF entity type. Arcs can represent doors, casement
+  windows, furniture, or curved construction; arc counts alone do not
+  establish doors. MTEXT/TEXT-heavy layers suggest labels. DIMENSION suggests
+  dimensions. HATCH boundaries and fill membership can be structural-region
+  evidence, but individual hatch strokes must not become wall faces.
 - lineweight: walls and columns are drafted heavy (30-40); doors, windows
   and furniture light (5-9). A value of -3 means "default", i.e. no signal.
 - linetype: HIDDEN usually means an element above the cut plane, such as a
@@ -123,11 +124,19 @@ Two warnings drawn from real drawings:
 
 1. The default layer "0" is sometimes where the entire building is drawn,
    holding more than half the entities. Its name tells you nothing. Judge it
-   on its share and its entity mix, not on its name.
+   on its share and its entity mix, not on its name. Record mixed evidence
+   in the reason and lower the score; this layer decision does not classify
+   every symbol or physical element on that layer.
 2. A drawing often splits walls across several layers. Classify EVERY
    wall-carrying layer as a wall, not just the best one.
 
 Return one entry per layer. Do not invent layers.
+Use only the supplied role vocabulary. Confidence is an uncalibrated
+evidence-strength score in [0,1], not a calibrated probability. Preserve
+uncertainty and cite observed evidence. Geometry may be angled or curved.
+Opening classification needs local jamb, host, gap, frame, and annotation
+evidence; a swing arc alone is insufficient. Drawing units and elevations
+remain unresolved at this stage; do not infer measured dimensions.
 """
 
 

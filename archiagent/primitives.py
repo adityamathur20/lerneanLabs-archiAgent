@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from archiagent.evidence import IngestWarning, NativeDimension, SourceEntity
+
 Pt = tuple[float, float]
 
 
@@ -23,6 +25,9 @@ class Primitive:
     layer: str
     stroke_width: float | None
     color: tuple[float, float, float] | None
+    source_id: str = ""
+    entity_type: str = ""
+    closed: bool = False
 
     def segments(self) -> list[tuple[Pt, Pt]]:
         """Explode into straight segments. Rects close back to the start."""
@@ -30,18 +35,19 @@ class Primitive:
             return []
         pairs = [(self.coords[i], self.coords[i + 1])
                  for i in range(len(self.coords) - 1)]
-        if self.kind == "rect":
+        if (self.kind == "rect" or self.closed) and self.coords[-1] != self.coords[0]:
             pairs.append((self.coords[-1], self.coords[0]))
         return pairs
 
 
 @dataclass(frozen=True)
 class TextItem:
-    """A text string with its exact bounding box — no OCR involved."""
+    """Native or explicitly tagged OCR text with a source-coordinate bounding box."""
 
     text: str
     bbox: tuple[float, float, float, float]  # x0, y0, x1, y1
     layer: str
+    source_id: str = ""
 
     def center(self) -> Pt:
         x0, y0, x1, y1 = self.bbox
@@ -56,6 +62,10 @@ class PrimitiveSet:
     height: float
     source_path: str
     source_sha256: str
+    entities: tuple[SourceEntity, ...] = ()
+    dimensions: tuple[NativeDimension, ...] = ()
+    warnings: tuple[IngestWarning, ...] = ()
+    declared_units_per_foot: float | None = None
 
     def layer_names(self) -> set[str]:
         return {p.layer for p in self.primitives} | {t.layer for t in self.texts}

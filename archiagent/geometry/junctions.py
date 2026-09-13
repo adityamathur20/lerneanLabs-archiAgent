@@ -16,63 +16,54 @@ from archiagent.geometry.walls import WallSeg
 from archiagent.primitives import Pt
 
 
-class _UnionFind:
-    def __init__(self, n: int) -> None:
-        self._parent = list(range(n))
+def _nonnegative(value: float, name: str) -> None:
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"{name} must be finite and nonnegative")
 
-    def find(self, i: int) -> int:
-        while self._parent[i] != i:
-            self._parent[i] = self._parent[self._parent[i]]
-            i = self._parent[i]
-        return i
 
-    def union(self, i: int, j: int) -> None:
-        ri, rj = self.find(i), self.find(j)
-        if ri != rj:
-            self._parent[max(ri, rj)] = min(ri, rj)
+def _wall_key(w):
+    return (min(w.start, w.end), max(w.start, w.end), w.thickness_ft,
+            w.source_layer, w.source_ids)
 
 
 def cluster_endpoints(walls: list[WallSeg] | tuple[WallSeg, ...],
                       snap_in: float = 1.0
                       ) -> tuple[tuple[WallSeg, ...], tuple[Pt, ...]]:
-    """Snap near-miss endpoints onto shared nodes.
+    """Deterministic complete-link clusters; no transitive tolerance growth.
 
-    Returns the walls with endpoints moved to their cluster centroid, and
-    the sorted list of distinct nodes.
+    Separated collinear ends are not drafting slop: joining them could seal
+    an opening. A cluster also never collapses the two ends of one wall.
     """
-    walls = list(walls)
-    if not walls:
-        return (), ()
-
-    snap_ft = snap_in / 12.0
-    points: list[Pt] = []
-    for w in walls:
-        points.append(w.start)
-        points.append(w.end)
-
-    uf = _UnionFind(len(points))
-    for i in range(len(points)):
-        for j in range(i + 1, len(points)):
-            if math.dist(points[i], points[j]) <= snap_ft:
-                uf.union(i, j)
-
-    groups: dict[int, list[int]] = {}
-    for idx in range(len(points)):
-        groups.setdefault(uf.find(idx), []).append(idx)
-
-    centroid: dict[int, Pt] = {}
-    for root, members in groups.items():
-        cx = sum(points[m][0] for m in members) / len(members)
-        cy = sum(points[m][1] for m in members) / len(members)
-        centroid[root] = (cx, cy)
-
-    out: list[WallSeg] = []
-    for k, w in enumerate(walls):
-        out.append(replace(w,
-                           start=centroid[uf.find(2 * k)],
-                           end=centroid[uf.find(2 * k + 1)]))
-
-    return tuple(out), tuple(sorted(set(centroid.values())))
+    _nonnegative(snap_in, "snap_in")
+    points = [(p, i, end) for i, w in enumerate(walls)
+              for end, p in enumerate((w.start, w.end))]
+    groups = []
+    for item in sorted(points, key=lambda item: (item[0], _wall_key(walls[item[1]]), item[2])):
+        p, i, _ = item
+        def compatible(group):
+            for q, j, _ in group:
+                if i == j or math.dist(p, q) > snap_in / 12 + 1e-12:
+                    return False
+                if math.dist(p, q) > 1e-9:
+                    di = _direction(walls[i].start, walls[i].end)
+                    dj = _direction(walls[j].start, walls[j].end)
+                    if abs(di[0] * dj[1] - di[1] * dj[0]) < 1e-7:
+                        return False
+            return True
+        options = [g for g in groups if compatible(g)]
+        if options:
+            min(options, key=lambda g: (max(math.dist(p, v[0]) for v in g), g[0][0])).append(item)
+        else:
+            groups.append([item])
+    assigned = {}
+    for group in groups:
+        unique = sorted({v[0] for v in group})
+        center = tuple(math.fsum(p[k] for p in unique) / len(unique) for k in (0, 1))
+        for _, i, end in group:
+            assigned[i, end] = center
+    out = tuple(replace(w, start=assigned[i, 0], end=assigned[i, 1])
+                for i, w in enumerate(walls))
+    return out, tuple(sorted(set(assigned.values())))
 
 
 def _line_intersection(a0: Pt, a1: Pt, b0: Pt, b1: Pt) -> Pt | None:
@@ -112,59 +103,43 @@ def _nz(p: Pt) -> Pt:
 
 def extend_to_intersections(walls: list[WallSeg] | tuple[WallSeg, ...],
                             extend_in: float = 6.0) -> tuple[WallSeg, ...]:
-    """Close undershoots and trim overshoots at wall intersections.
+    """Choose the nearest eligible intersection from immutable source lines.
 
-    A gap within `extend_in` is sloppy drafting and is closed. A gap
-    beyond it is a DOORWAY and is left alone — sealing doorways would
-    merge rooms and look like success while being badly wrong.
+    The budget is a drafting-repair limit, not evidence that a gap is not a
+    door. Collinear gaps are never bridged. Ties use coordinates, not order.
     """
-    walls = list(walls)
-    budget_ft = extend_in / 12.0
-    starts = [w.start for w in walls]
-    ends = [w.end for w in walls]
-    # Budget is measured from the ORIGINAL endpoints. Measuring from the running
-    # values lets extension compound across hops: a wall reaches one intersection,
-    # then measures the next from there, and can walk clean through a doorway in
-    # two individually-legal steps. It also makes the result depend on list order.
-    orig_starts = list(starts)
-    orig_ends = list(ends)
-
-    for i in range(len(walls)):
-        for j, wj in enumerate(walls):
+    _nonnegative(extend_in, "extend_in")
+    budget = extend_in / 12
+    out = []
+    for i, w in enumerate(walls):
+        candidates = [[], []]
+        for j, other in enumerate(walls):
             if i == j:
                 continue
-            hit = _line_intersection(starts[i], ends[i], wj.start, wj.end)
-            if hit is None:
+            hit = _line_intersection(w.start, w.end, other.start, other.end)
+            if hit is None or _distance_to_segment(hit, other.start, other.end) > budget + 1e-9:
                 continue
+            for end, p in enumerate((w.start, w.end)):
+                distance = math.dist(p, hit)
+                opposite = w.end if end == 0 else w.start
+                if distance <= budget + 1e-9 and math.dist(hit, opposite) > 1e-9:
+                    candidates[end].append((distance, _nz(hit)))
+        start = min(candidates[0])[1] if candidates[0] else w.start
+        end = min(candidates[1])[1] if candidates[1] else w.end
+        # Never invert or collapse short spans when both ends want one node.
+        if _param_on(end, w.start, w.end) <= _param_on(start, w.start, w.end):
+            start, end = w.start, w.end
+        out.append(replace(w, start=start, end=end))
+    return tuple(out)
 
-            # The corner must lie on, or within the same budget of, wall j.
-            # A mutual undershoot leaves it just past j's end: at a corner both
-            # walls stop half a wall-thickness short, so requiring the corner to
-            # be strictly ON j deadlocks — each wall waits for the other.
-            if _distance_to_segment(hit, wj.start, wj.end) > budget_ft:
-                continue
 
-            # KNOWN LIMITATION (deliberately parked, not a bug to fix in place):
-            # when a wall's original endpoint is within budget of TWO different
-            # walls' lines, the LAST candidate iterated wins rather than the
-            # NEAREST. Verified: h=(0,0)-(9.7,0) against verticals at x=9.8 and
-            # x=10.1 resolves to 10.1 or 9.8 depending on input order. Travel
-            # stays inside the budget either way (that is Fix 1 above), so the
-            # doorway guarantee holds; what varies is WHICH intersection is
-            # chosen. Switching to nearest-wins is principled and was prototyped
-            # successfully, but on the sample drawing it drops the only detected
-            # space from 1 to 0, because that ring closes via a farther
-            # intersection. Practical impact is nil today: detect_walls_paired_lines
-            # emits a stable order, so a given PDF always yields the same model.
-            # Sequence this fix with the M6 hatch-body detector, when room
-            # detection no longer hangs on a single marginal ring.
-            if math.dist(hit, orig_ends[i]) <= budget_ft:
-                ends[i] = _nz(hit)
-            elif math.dist(hit, orig_starts[i]) <= budget_ft:
-                starts[i] = _nz(hit)
-
-    return tuple(replace(w, start=starts[k], end=ends[k])
-                 for k, w in enumerate(walls))
+@dataclass(frozen=True)
+class EndpointAdjustment:
+    source_ids: tuple[str, ...]
+    original: Pt
+    resolved: Pt
+    distance_ft: float
+    reason: str = "junction repair"
 
 
 @dataclass(frozen=True)
@@ -182,6 +157,9 @@ class WallGraph:
     walls: tuple[WallSeg, ...]
     junctions: tuple[Junction, ...]
     unresolved: tuple[Pt, ...] = field(default=())
+    snap_in: float = 0.0
+    extend_in: float = 0.0
+    adjustments: tuple[EndpointAdjustment, ...] = ()
 
 
 def split_through_walls(walls: list[WallSeg] | tuple[WallSeg, ...],
@@ -189,6 +167,7 @@ def split_through_walls(walls: list[WallSeg] | tuple[WallSeg, ...],
                         tol_in: float = 1.0) -> tuple[WallSeg, ...]:
     """Split any wall whose INTERIOR contains a node, so T and X junctions
     become real graph nodes rather than geometric coincidences."""
+    _nonnegative(tol_in, "tol_in")
     tol_ft = tol_in / 12.0
     out: list[WallSeg] = []
 
@@ -211,11 +190,12 @@ def split_through_walls(walls: list[WallSeg] | tuple[WallSeg, ...],
             out.append(w)
             continue
 
-        interior.sort()
+        interior = sorted(set(interior))
         cursor = w.start
         for _, n in interior:
-            out.append(replace(w, start=cursor, end=n))
-            cursor = n
+            if math.dist(cursor, n) > 1e-9:
+                out.append(replace(w, start=cursor, end=n))
+                cursor = n
         out.append(replace(w, start=cursor, end=w.end))
 
     return tuple(out)
@@ -252,26 +232,40 @@ def resolve_junctions(walls: list[WallSeg] | tuple[WallSeg, ...],
     Tolerances are in inches and are reported on the result so a run's
     junction behaviour is auditable.
     """
-    # Drop zero-length input walls outright (1e-9: exact-input tolerance).
-    walls = [w for w in walls if w.length_ft > 1e-9]
+    for value, name in ((snap_in, "snap_in"), (extend_in, "extend_in"),
+                        (min_dangle_ft, "min_dangle_ft")):
+        _nonnegative(value, name)
+    walls = sorted((replace(w, start=min(w.start, w.end), end=max(w.start, w.end))
+                    for w in walls if w.length_ft > 1e-9), key=_wall_key)
     if not walls:
-        return WallGraph((), (), ())
-
+        return WallGraph((), (), (), snap_in, extend_in)
     snapped, _ = cluster_endpoints(walls, snap_in=snap_in)
     extended = extend_to_intersections(snapped, extend_in=extend_in)
-    # A wall that extension collapsed to a point (its end snapped onto an
-    # intersection where its start already sat) is an artifact, not a wall:
-    # left in, it would both survive dangle pruning (its two endpoints are
-    # the same node, so both have degree > 1) and spuriously split whatever
-    # wall passes through that point. The threshold here (1e-6) is looser
-    # than the 1e-9 used above on raw input: the intersection math the walls
-    # just passed through (division, multiple coordinate combinations) is
-    # not exact, so a "collapsed" wall's length may not land on precisely
-    # 0.0 -- it needs a coarser epsilon to still be caught as degenerate.
-    extended = tuple(w for w in extended if w.length_ft > 1e-6)
-    resnapped, nodes = cluster_endpoints(extended, snap_in=snap_in)
-    split = split_through_walls(resnapped, nodes, tol_in=snap_in)
-    final, nodes = cluster_endpoints(split, snap_in=snap_in)
+    adjustments = tuple(EndpointAdjustment(old.source_ids, a, b, math.dist(a, b))
+                        for old, new in zip(walls, extended)
+                        for a, b in zip((old.start, old.end), (new.start, new.end))
+                        if math.dist(a, b) > 1e-9)
+    # Quantization is numerical normalization, not another drafting snap pass.
+    extended = tuple(replace(w, start=tuple(round(v, 9) for v in w.start),
+                             end=tuple(round(v, 9) for v in w.end)) for w in extended)
+    nodes = {p for w in extended for p in (w.start, w.end)}
+    for i, w in enumerate(extended):
+        for other in extended[i + 1:]:
+            hit = _line_intersection(w.start, w.end, other.start, other.end)
+            if hit is not None and (1e-9 < _param_on(hit, w.start, w.end) < 1 - 1e-9
+                                    and 1e-9 < _param_on(hit, other.start, other.end) < 1 - 1e-9):
+                nodes.add(tuple(round(v, 9) for v in hit))
+    final = split_through_walls(extended, tuple(sorted(nodes)), tol_in=1e-7)
+    unique = {}
+    for w in final:
+        if w.length_ft > 1e-9:
+            key = (min(w.start, w.end), max(w.start, w.end), round(w.thickness_ft, 9))
+            if key in unique:
+                prev = unique[key]
+                unique[key] = replace(prev, source_ids=tuple(sorted(set(prev.source_ids + w.source_ids))))
+            else:
+                unique[key] = w
+    final = tuple(sorted(unique.values(), key=_wall_key))
 
     # Prune dangles: short walls with a free end. Iterate to a fixpoint --
     # removing one dangle can expose the next along a chain (free-end -> A ->
@@ -305,4 +299,5 @@ def resolve_junctions(walls: list[WallSeg] | tuple[WallSeg, ...],
 
     unresolved = tuple(pt for pt, inc in sorted(incident.items()) if len(inc) == 1)
 
-    return WallGraph(walls=kept, junctions=junctions, unresolved=unresolved)
+    return WallGraph(walls=kept, junctions=junctions, unresolved=unresolved,
+                     snap_in=snap_in, extend_in=extend_in, adjustments=adjustments)
