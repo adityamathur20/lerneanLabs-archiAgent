@@ -113,3 +113,26 @@ modeling and comprehensive furniture/MEP generation remain outside the current
 implementation. Source accuracy on the original client drawing has not been
 measured by these synthetic checks. No claim of a universal accuracy boost is
 supported yet.
+
+## Active classifier prompt follow-up
+
+Both active classifier prompts in `archiagent/classify/prompt.py` now share
+explicit role definitions, within-drawing evidence comparison, counterexamples,
+mixed-layer handling and uncertainty bands. Native wall/column hatching is no
+longer automatically routed to annotation. The DXF prompt separately explains
+inventory-only and labelled image-review modes, including evidence ownership
+between isolated layers and the reference image. The response schema remains
+unchanged; the content-derived version changed from `b560648bb28b` to
+`886594f1567e`, so old cached classifications are not reused.
+
+Validation: **21 targeted checks passed**, covering the PDF/DXF text callers,
+DXF visual batch delivery, old-cache invalidation/new-cache reuse and the frozen
+replay regressions. These use fake provider transports, not actual LLM responses,
+and therefore do not measure classification accuracy. Seven dependency warnings
+were reported. Commands:
+
+```bash
+XDG_CACHE_HOME="$PWD/.cache" .venv/bin/python -m pytest \
+  checks/test_classifier_prompt_wiring.py checks/test_interpretation_replay.py \
+  -q --basetemp=.test-tmp/prompt-enhancement
+```

@@ -450,3 +450,32 @@ consume the frozen result rather than repeating visual interpretation.
 ```
 
 Determinism applies to replay of the saved model with a compatible fixed environment. Version drift is reported, not automatically corrected or prohibited; compare geometry when upgrading. IFC timestamps and serialization can differ while semantic IDs and physical geometry agree. Manifests detect accidental tampering but are not signed approvals. Accuracy must be measured against independent dimensions and reviewed symbol/footprint references across varied drawings.
+
+## Active classifier prompt enhancements
+
+`archiagent/classify/prompt.py` contains the active `SYSTEM_PROMPT` (vector/PDF
+inventory) and `DXF_SYSTEM_PROMPT` (DXF inventory and optional image review).
+Both now include a shared architectural-role and uncertainty guide, so their
+classification rules agree. This Markdown document remains the broader workflow
+contract; it is not substituted into the classifier's constrained JSON call.
+
+The active prompts compare complete layer names and modifiers against supplied
+evidence, distinguish architectural intent from hatch/entity representation,
+cover all 19 supported roles, and identify likely competing interpretations.
+They distinguish structural evidence from plotting weight, windows from casement
+or door swings, stairs from repeated hatch strokes, and fixtures/furniture from
+walls and columns. Mixed layers and missing local geometry remain uncertain.
+Explicit demolition/existing/new labels are status evidence, not new role values
+or automatic instructions to include/remove geometry.
+
+DXF image review attributes evidence to the isolated layer and uses the full
+reference only for context. Inventory-only calls cannot claim to see opening
+hosts, connected wall faces, block contents or text that was not supplied.
+Confidence bands standardize reporting without claiming calibrated probabilities.
+Reasons remain short evidence summaries and the JSON response schema is unchanged.
+The content-derived prompt version invalidates old classification cache entries.
+
+The more detailed instructions increase input length (about 1,124 words for the
+PDF prompt and 1,387 for DXF at this revision). They improve the evidence contract;
+they do not establish an accuracy gain without labelled examples and actual
+provider evaluation. No model/provider calls are made by the integration tests.
