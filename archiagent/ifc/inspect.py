@@ -20,6 +20,7 @@ from shapely.ops import unary_union
 
 from archiagent.ifc.author import FT, SLAB_THICKNESS_FT
 from archiagent.ifc.profile_layout import host_name, profile_material_slices, wall_layout
+from archiagent.validate import GEOMETRY_EPS_FT
 
 PHYSICAL_CLASSES = ("IfcWall", "IfcSlab", "IfcDoor", "IfcWindow", "IfcColumn", "IfcBeam")
 VOLUME_ABS_TOL_M3 = 1e-8
@@ -95,6 +96,10 @@ def _expectations(models):
                     continue
                 a,b = sorted((p[0]-wall.start[0])*ux+(p[1]-wall.start[1])*uy
                              for p in (op.start,op.end))
+                # A void flush with the host ends within model tolerance cuts
+                # through them; projection residue must not survive as a sliver.
+                a = 0.0 if a <= GEOMETRY_EPS_FT else a
+                b = length if b >= length-GEOMETRY_EPS_FT else b
                 cuts.append(box(a, op.sill_ft, b, op.sill_ft+op.height_ft))
             section = box(0,0,length,model.wall_height_ft).difference(unary_union(cuts))
             if section.is_empty:

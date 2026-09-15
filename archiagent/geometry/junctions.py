@@ -223,6 +223,60 @@ def _classify(point: Pt, incident: list[tuple[int, Pt]]) -> str:
     return "collinear" if dot > 0.99 else "L"
 
 
+# Ends closer than this are one node that floating point split in two: about
+# 0.001in, far below drafting precision, yet a wall this short breaks IFC
+# solids. Such a wall is contracted into its neighbours, never exported.
+RESIDUE_FT = 1e-4
+
+
+def _merge_duplicates(walls):
+    unique = {}
+    for w in walls:
+        if w.length_ft > 1e-9:
+            key = (min(w.start, w.end), max(w.start, w.end), round(w.thickness_ft, 9))
+            if key in unique:
+                prev = unique[key]
+                unique[key] = replace(prev, source_ids=tuple(sorted(set(prev.source_ids + w.source_ids))))
+            else:
+                unique[key] = w
+    return tuple(sorted(unique.values(), key=_wall_key))
+
+
+def _contract_residue(walls):
+    """Collapse each wall shorter than RESIDUE_FT into a single node.
+
+    The surviving point is a doorway host's end when one is involved -- its
+    opening was localized against that end -- else the better-connected end.
+    Every moved endpoint is reported, like any other repair.
+    """
+    walls = list(walls)
+    adjustments = []
+    while True:
+        short = next((w for w in walls if w.length_ft < RESIDUE_FT), None)
+        if short is None:
+            return tuple(walls), tuple(adjustments)
+        degree: dict[Pt, int] = {}
+        hosts = set()
+        for w in walls:
+            for p in (w.start, w.end):
+                degree[p] = degree.get(p, 0) + 1
+                if w.detector == "opening-host":
+                    hosts.add(p)
+        keep = min((short.start, short.end), key=lambda p: (p not in hosts, -degree[p], p))
+        drop = short.end if keep == short.start else short.start
+        moved = []
+        for w in walls:
+            if w is short:
+                continue
+            if drop in (w.start, w.end):
+                ends = tuple(keep if p == drop else p for p in (w.start, w.end))
+                adjustments.append(EndpointAdjustment(w.source_ids, drop, keep,
+                                                      math.dist(drop, keep), "numerical residue"))
+                w = replace(w, start=min(ends), end=max(ends))
+            moved.append(w)
+        walls = list(_merge_duplicates(moved))
+
+
 def resolve_junctions(walls: list[WallSeg] | tuple[WallSeg, ...],
                       snap_in: float = 1.0,
                       extend_in: float = 6.0,
@@ -256,16 +310,8 @@ def resolve_junctions(walls: list[WallSeg] | tuple[WallSeg, ...],
                                     and 1e-9 < _param_on(hit, other.start, other.end) < 1 - 1e-9):
                 nodes.add(tuple(round(v, 9) for v in hit))
     final = split_through_walls(extended, tuple(sorted(nodes)), tol_in=1e-7)
-    unique = {}
-    for w in final:
-        if w.length_ft > 1e-9:
-            key = (min(w.start, w.end), max(w.start, w.end), round(w.thickness_ft, 9))
-            if key in unique:
-                prev = unique[key]
-                unique[key] = replace(prev, source_ids=tuple(sorted(set(prev.source_ids + w.source_ids))))
-            else:
-                unique[key] = w
-    final = tuple(sorted(unique.values(), key=_wall_key))
+    final, residue = _contract_residue(_merge_duplicates(final))
+    adjustments += residue
 
     # Prune dangles: short walls with a free end. Iterate to a fixpoint --
     # removing one dangle can expose the next along a chain (free-end -> A ->

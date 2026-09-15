@@ -52,6 +52,8 @@ def _instance(kind, ids, points, names, evidence):
         return None
     if kind=="column" and (depth<.15 or width/max(depth,1e-6)>5):
         return None
+    if kind=="beam" and depth<=0:
+        return None  # a single line has no section, so it cannot become a solid
     label=" ".join(names).lower()
     subtype="unknown"
     if kind=="door":
