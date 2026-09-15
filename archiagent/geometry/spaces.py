@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, replace
 
+from shapely import make_valid
 from shapely.geometry import LineString, Polygon
 from shapely.ops import linemerge, polygonize, unary_union
 
@@ -47,9 +48,15 @@ def _polygons(geometry):
 
 
 def _spaces(polygons, min_area):
-    out = [Space(_ring(p.exterior.coords), p.area,
-                 tuple(sorted(_ring(r.coords) for r in p.interiors)))
-           for p in polygons if p.area >= min_area]
+    out = []
+    for p in polygons:
+        # Rounding can fold a sub-nanometre sliver into a zero-width spike.
+        # A spike is not area, so a folded outline keeps only its polygon parts.
+        rounded = Polygon(_ring(p.exterior.coords), [_ring(r.coords) for r in p.interiors])
+        parts = [(p, p.area)] if rounded.is_valid else [(q, q.area) for q in _polygons(make_valid(rounded))]
+        out.extend(Space(_ring(q.exterior.coords), area,
+                         tuple(sorted(_ring(r.coords) for r in q.interiors)))
+                   for q, area in parts if area >= min_area)
     return tuple(sorted(out, key=lambda s: (-s.area_sqft, s.boundary, s.holes)))
 
 

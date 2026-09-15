@@ -20,6 +20,23 @@ from archiagent.classify.roles import Role
 from archiagent.classify.rules import named_role
 from archiagent.geometry.walls import WallSeg
 from archiagent.semantic import Opening, SymbolInstance
+from archiagent.validate import GEOMETRY_EPS_FT
+
+
+def _spans_overlap(a0, a1, b0, b1):
+    """Two opening spans share more than a point, within model tolerance.
+
+    Exact segment intersection is not enough: spans a residue apart on a
+    barely sloped wall meet in a point, so a window drawn twice was cut twice.
+    """
+    length = math.dist(a0, a1)
+    if length <= GEOMETRY_EPS_FT:
+        return False
+    ux, uy = (a1[0]-a0[0])/length, (a1[1]-a0[1])/length
+    if any(abs((p[0]-a0[0])*uy-(p[1]-a0[1])*ux) > GEOMETRY_EPS_FT for p in (b0, b1)):
+        return False
+    lo, hi = sorted((p[0]-a0[0])*ux+(p[1]-a0[1])*uy for p in (b0, b1))
+    return min(hi, length)-max(lo, 0.0) > GEOMETRY_EPS_FT
 
 KINDS = {Role.DOOR:"door",Role.WINDOW:"window",Role.COLUMN:"column",Role.BEAM_OVERHEAD:"beam",
          Role.STAIR:"stair",Role.FURNITURE:"furniture",Role.ELECTRICAL:"electrical",
@@ -372,7 +389,7 @@ def host_openings(walls,symbols,wall_height_ft):
                     opening_start,opening_end=at(max(lo,low)),at(min(hi,high))
                 else:
                     opening_start,opening_end=start,end
-                if any(LineString((opening_start,opening_end)).intersection(LineString((o.start,o.end))).length>1e-6 for o in openings):return
+                if any(_spans_overlap(opening_start,opening_end,o.start,o.end) for o in openings):return
                 score=perpendicular+abs((lo+hi-low-high)/2)+abs(span-gap)*.2
                 host=WallSeg(start,end,a.thickness_ft,a.source_layer,"opening-host","measured",
                              tuple(sorted(set(source_ids+symbol.source_ids))))
@@ -405,8 +422,7 @@ def host_openings(walls,symbols,wall_height_ft):
                 if abs(corner_end-t)>(a.thickness_ft+b.thickness_ft)/2+.05:continue
                 propose(low,high,{i,j},a.source_ids+b.source_ids)
         candidates=[c for c in candidates if not any(
-            LineString((c[2],c[3])).intersection(LineString((o.start,o.end))).length>1e-6
-            for o in openings)]
+            _spans_overlap(c[2],c[3],o.start,o.end) for o in openings)]
         candidates.sort(key=lambda c:(c[0],c[2],c[3],c[1]))
         # Symmetric evidence on two distinct wall axes remains unresolved.
         if not candidates:continue

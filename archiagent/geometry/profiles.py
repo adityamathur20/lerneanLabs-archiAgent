@@ -142,7 +142,35 @@ def detect_wall_profiles(ps: PrimitiveSet, wall_layers: set[str], units_per_foot
             continue
         profile = _profile(poly, ids, layer, "native-wall-face")
         profiles[profile.id] = profile
-    return tuple(profiles[k] for k in sorted(profiles)), tuple(warnings)
+    kept, overlaps = _distinct_profiles(profiles.values())
+    return kept, tuple(warnings) + overlaps
+
+
+def _distinct_profiles(profiles):
+    """Merge a hatch drawn twice; leave a partly overlapping outline for review.
+
+    Rule-accepted outlines are never clipped: the larger one is kept and the
+    smaller is reported, like any other unproven body. Export still refuses
+    overlapping reviewed profiles.
+    """
+    from archiagent.ifc.profile_layout import PROFILE_TOL_FT
+    ordered = sorted(profiles, key=lambda p: (-profile_polygon(p).area, p.id))
+    polygons = [profile_polygon(p) for p in ordered]
+    tree = STRtree(polygons)
+    kept, warnings = {}, []
+    for i, (profile, poly) in enumerate(zip(ordered, polygons)):
+        near = sorted(int(j) for j in tree.query(poly) if int(j) in kept)
+        same = next((j for j in near if polygons[j].equals_exact(poly, PROFILE_TOL_FT)), None)
+        if same is not None:
+            first = kept[same]
+            kept[same] = _profile(polygons[same], first.source_ids + profile.source_ids,
+                                  first.source_layer, first.detector)
+        elif any(poly.intersection(polygons[j]).area > PROFILE_TOL_FT**2 for j in near):
+            warnings.append(IngestWarning("wall_profile_needs_review", ",".join(profile.source_ids),
+                "filled body overlaps a larger wall outline; supply an accepted profile if appropriate"))
+        else:
+            kept[i] = profile
+    return tuple(sorted(kept.values(), key=lambda p: p.id)), tuple(warnings)
 
 
 def detect_exploded_hatch_profiles(ps: PrimitiveSet, boundary_layers: set[str],
