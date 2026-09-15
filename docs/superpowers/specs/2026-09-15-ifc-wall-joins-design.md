@@ -2,7 +2,8 @@
 
 **Date:** 2026-09-15
 **Status:** Approved design (brainstormed with the user 2026-09-15), pending
-spec review.
+spec review. Revised the same day to include `IfcWallStandardCase`,
+`IfcRectangleProfileDef` and `ConnectionGeometry` (§2.6).
 **Branch:** `feature/generic-ifc-replay-blender` only.
 
 **Predecessors:** commits `95041cd` and `51b01b8` (floating-point residue no
@@ -22,12 +23,20 @@ T and X intersection one wall runs continuously through the intersection and
 the other stops at its face. No wall overlaps another, and no corner is left
 notched.
 
-Walls are also written the way BIM tools expect a standard wall: an Axis
-line, a Body extrusion, a material layer set with a centred layer, and
-`IfcRelConnectsPathElements` between connected walls. Bonsai can therefore
-re-join the walls correctly if a user edits them.
+Straight walls are written as standard parametric walls:
 
-The reopened-IFC checker verifies the joined geometry exactly.
+- `IfcWallStandardCase`
+- an Axis line and a Body extrusion
+- an `IfcRectangleProfileDef` wherever the joined outline is a rectangle
+- a material layer set centred on the axis
+- `IfcRelConnectsPathElements` carrying an `IfcConnectionPointGeometry` at
+  the axis crossing
+
+Bonsai can re-join the walls correctly if a user edits them, and other BIM
+tools receive every parametric cue IFC offers.
+
+The reopened-IFC checker verifies the joined geometry exactly, and verifies
+the class, the profile type and the connection points.
 
 ---
 
@@ -101,6 +110,36 @@ splits walls at every node, so nothing passes through a junction.
 Timing: 46 walls with 529 joins created, connected and regenerated in
 0.5 s total.
 
+### 2.6 The three parametric cues work with the joins
+
+A butt L of two `IfcWallStandardCase` walls was built with
+`IfcRectangleProfileDef` bodies, layer priorities, and an
+`IfcConnectionPointGeometry` passed to `connect_path`:
+
+- **Joins:** `connect_path` and `regenerate_wall_representation` work
+  unchanged on `IfcWallStandardCase`.
+- **Profiles:** regeneration **rewrites both bodies to
+  `IfcArbitraryClosedProfileDef`**, even though a perpendicular butt joint
+  leaves both outlines rectangular. Keeping rectangles therefore requires
+  converting them back after regeneration (§5 step 6). Any later Bonsai edit
+  regenerates polygons again.
+- **Connection geometry:** `connect_path` stores the connection geometry,
+  and it survives regeneration. IfcOpenShell's wall code never reads it
+  (only its space-boundary code uses `ConnectionGeometry`).
+- **Validation:** `ifcopenshell.validate` with EXPRESS rules reports **0
+  errors** (after naming the spike's `IfcProject`, which the rules require).
+
+Schema facts, checked locally:
+
+- `IfcWallStandardCase` is present in IfcOpenShell's IFC2X3, IFC4 and
+  IFC4X3_ADD2 schemas.
+- The bundled documentation carries no deprecation note.
+- IfcOpenShell's API never creates it.
+- The buildingSMART documentation pages returned HTTP 403, so deprecation
+  status was not confirmed from the official site.
+- An earlier draft of this spec called the class deprecated and removed; that
+  claim is withdrawn.
+
 ---
 
 ## 3. Required geometry
@@ -130,14 +169,14 @@ The ranking is a total order, so every run produces the same IFC.
 
 ## 4. Runs — `archiagent/ifc/wall_runs.py` (new)
 
-A **run** is the unit written as one `IfcWall`: one or more model walls
+A **run** is the unit written as one wall entity: one or more model walls
 chained end to end.
 
 ### 4.1 Inputs
 
 `model.walls`, `model.junctions`, and `wall_layout(model)`. Walls mapped to an
 accepted `WP:` wall profile never join a run and never join anything; they
-are authored exactly as today.
+are authored exactly as today, as `IfcWall`.
 
 ### 4.2 Straight-through partners
 
@@ -166,16 +205,21 @@ profile wall.
 Runs in a deterministic order. Each run records its member model-wall
 indices in chain order, its axis start and end (the chain's outer
 endpoints), thickness, source layer, merged source IDs, and its per-end joint
-roles. It also records the list of connections, and the untrimmed junction
-points. Nothing in `BuildingModel` changes, so frozen interpretations and
-replay are unaffected.
+roles. It also records the list of connections with their junction points,
+and the untrimmed junction points. Nothing in `BuildingModel` changes, so
+frozen interpretations and replay are unaffected.
 
 ### 4.5 Naming and identity
 
 A run is named `W{lowest member index:03d}` and carries
 `ModelWallIndices` (JSON list) in `ArchiAgent_Provenance`. A wall that is not
-merged keeps its current name, so its stable GlobalId is unchanged. Merged
-members other than the lowest no longer exist as separate `IfcWall`s.
+merged keeps its current name.
+
+Stable GlobalIds hash the entity class name (`identity.assign_stable_ids`).
+Switching straight walls to `IfcWallStandardCase` would otherwise change the
+GlobalId of **every** wall. The identity key therefore uses `IfcWall` for
+`IfcWallStandardCase`, so an unmerged wall keeps its GlobalId. Merged members
+other than the lowest no longer exist as separate wall entities.
 
 ---
 
@@ -186,28 +230,52 @@ Order within `_author_plan`:
 1. **Context.** `author_building` adds `Plan` and `Plan/Axis/GRAPH_VIEW`
    contexts once per file.
 2. **Material layer sets.** One `IfcMaterialLayerSet` per
-   `(thickness, priority)` pair, with one layer of that thickness. The
-   material is named after the wall presentation preset. Only walls
-   involved in an L need a nonzero priority, where priority is the wall's
-   rank from §3.
-3. **Runs.** For each run: `IfcWall` named per §4.5; Axis polyline from
-   run start to run end; Body rectangle extrusion as today; placement at the
-   run start; `IfcMaterialLayerSetUsage` with `LayerSetDirection=AXIS2`,
-   `DirectionSense=POSITIVE`, `OffsetFromReferenceLine=-thickness/2`;
-   provenance as today plus `ModelWallIndices`.
+   `(thickness, priority)` pair, with one layer of that thickness and
+   `IfcMaterialLayer.Priority` set. The material is named after the wall
+   presentation preset. Only walls involved in an L need a nonzero priority,
+   where priority is the wall's rank from §3.
+3. **Runs.** For each run:
+   - an `IfcWallStandardCase` named per §4.5;
+   - an Axis `IfcPolyline` from run start to run end;
+   - a Body `IfcExtrudedAreaSolid` over an `IfcRectangleProfileDef`
+     (`XDim` = run length, `YDim` = thickness, positioned so the axis is
+     centred);
+   - placement at the run start;
+   - an `IfcMaterialLayerSetUsage` with `LayerSetDirection=AXIS2`,
+     `DirectionSense=POSITIVE`, `OffsetFromReferenceLine=-thickness/2`;
+   - provenance as today plus `ModelWallIndices`.
 4. **Connections.** `geometry.connect_path` for every connection from §4.3.
-   No `ConnectionGeometry`, no relationship priorities.
+   No relationship priorities.
 5. **Regeneration.** `geometry.regenerate_wall_representation` on every run
-   with at least one connection, then re-apply the wall presentation style to
-   the new Body item. Regeneration replaces the styled item.
-6. **Openings.** Hosted on the run containing the opening's model host wall
+   with at least one connection.
+6. **Parametric profile restore.** For each regenerated Body item whose swept
+   area is an `IfcArbitraryClosedProfileDef` with four distinct points that
+   form a rectangle aligned with the wall's local axes (to 1e-9 m):
+   - replace the swept area with an `IfcRectangleProfileDef` of the same
+     extent;
+   - remove the orphaned polyline profile.
+
+   Outlines that are not rectangles, such as non-perpendicular joints, keep
+   the polygon and are counted in the storey provenance.
+7. **Presentation.** Re-apply the wall presentation style to the final Body
+   item, because regeneration replaced the styled item.
+8. **Connection geometry.** After regeneration, which may move placements,
+   set each relationship's `ConnectionGeometry` to an
+   `IfcConnectionPointGeometry`:
+   - `PointOnRelatingElement`: the junction point in the relating wall's
+     object coordinates, as an `IfcCartesianPoint` with z = 0;
+   - `PointOnRelatedElement`: the same point in the related wall's
+     coordinates.
+9. **Openings.** Hosted on the run containing the opening's model host wall
    (`host_name` resolves model wall index → run name). Placement stays
    absolute, so regeneration does not move voids.
-7. **Storey provenance.** `JointGeometry` becomes
-   `"Butt joints; intersection owned by one wall"`, plus
-   `UntrimmedJunctionsJSON` listing untrimmed junction points.
+10. **Storey provenance.**
+    - `JointGeometry` becomes `"Butt joints; intersection owned by one wall"`.
+    - `UntrimmedJunctionsJSON` lists untrimmed junction points.
+    - `NonRectangularWallProfiles` counts step 6's exceptions.
 
-`validate.py` drops the `joint_solids_untrimmed` warning.
+`validate.py` drops the `joint_solids_untrimmed` warning. Its own issue
+entity labels (`W{idx:03d}`) refer to model walls and are unchanged.
 
 Joins are always on; there is no CLI flag.
 
@@ -217,10 +285,16 @@ Joins are always on; there is no CLI flag.
 
 ### 6.1 Unchanged
 
-Schema validation, entity counts, containment, GlobalId uniqueness,
-opening void and filling relationships (expected host now the run name), and
-exact volume/bounds for slabs, columns, beams, doors, windows and `WP:`
-walls.
+The following stay as they are:
+
+- schema validation, which now includes `IfcWallStandardCase`'s EXPRESS
+  WHERE rules;
+- entity counts (`by_type("IfcWall")` includes the subtype);
+- containment and GlobalId uniqueness;
+- opening void and filling relationships (the expected host is now the run
+  name);
+- exact volume and bounds for slabs, columns, beams, doors, windows and `WP:`
+  walls.
 
 ### 6.2 Exact run expectations
 
@@ -240,7 +314,22 @@ void-adjusted z range. Existing tolerances and codes apply
 for non-perpendicular joints, because it clips by face lines rather than
 assuming rectangles.
 
-### 6.3 Storey-wide checks
+### 6.3 Parametric structure checks
+
+- **`wall_class_mismatch`:** a run must be `IfcWallStandardCase`; a `WP:`
+  wall must be plain `IfcWall`.
+- **`wall_parametric_data_missing`:** every run must have both Axis and Body
+  representations, and an `IfcMaterialLayerSetUsage` whose total layer
+  thickness equals the run thickness and whose offset is −thickness/2.
+- **`wall_profile_not_parametric`:** a run whose predicted footprint is a
+  rectangle must have an `IfcRectangleProfileDef` Body with matching
+  `XDim`/`YDim`.
+- **`connection_geometry_mismatch`:** every `IfcRelConnectsPathElements`
+  must carry an `IfcConnectionPointGeometry`. Both of its points, transformed
+  to world coordinates, must lie within `BOUNDS_TOL_M` of the model junction
+  point. The connection types must match §4.3.
+
+### 6.4 Storey-wide checks
 
 - **`wall_overlap`:** project each run solid's triangles to XY, union them
   per run, and intersect pairs found via an STRtree. Overlap above
@@ -266,12 +355,11 @@ junctions as warnings, so a failure shows where and by how much.
 
 | Suggestion | Why not |
 |---|---|
-| `IfcWallStandardCase` | Deprecated in IFC4 ADD2 TC1, removed in IFC4.3; Bonsai writes `IfcWall` + layer set usage |
-| `IfcRectangleProfileDef` | IfcOpenShell itself writes `IfcArbitraryClosedProfileDef` after joining; a clipped end is not a rectangle. Parametric intent lives in the Axis and layer set |
-| `ConnectionGeometry` | Optional; IfcOpenShell ignores it. If ever added, the axis crossing is `IfcConnectionPointGeometry`, not `IfcConnectionCurveGeometry` |
+| Connection-level `RelatingPriorities`/`RelatedPriorities` | Crash in 0.8.5 (§2.3); layer priorities give the same joint |
+| `IfcConnectionCurveGeometry` | Two axes meet at a point; the curve type describes a connection along a line |
 | Post-processing the written IFC | The model already has exact centrelines; `WP:` walls are not rectangles |
-| Relationship priorities | Crash in 0.8.5 (§2.3) |
 | Mitred corners | Contradicts §3 |
+| `IfcWallStandardCase` / rectangle profiles for `WP:` walls | Their outlines are arbitrary polygons with holes, which neither describes |
 
 ---
 
@@ -290,15 +378,28 @@ All tests use synthetic plans; no client drawings enter the repository.
 - One authored-and-reopened plan per sketch case: L (green thicker, blue
   thicker, equal), T and X. Assert each wall's XY footprint equals the sketch
   geometry and total overlap is 0.
+- Runs are `IfcWallStandardCase`; `WP:` walls stay `IfcWall`.
 - Every run has Axis and Body representations and a layer set usage with
   offset −thickness/2.
-- Wall presentation style survives regeneration.
+- Perpendicular joined runs have `IfcRectangleProfileDef` bodies with the
+  sketch's dimensions; a non-perpendicular joint keeps a polygon and is
+  counted.
+- Every connection has an `IfcConnectionPointGeometry` whose points map to the
+  junction.
+- Wall presentation style survives regeneration and the profile restore.
 - A door void still voids its run; unmerged walls keep names and GlobalIds.
+- `ifcopenshell.validate` with EXPRESS rules reports no errors.
 
 **`checks/test_export_validation.py` additions**
 - A joined model passes.
-- A shifted run, a deleted run, a lengthened run, and a duplicated overlapping
-  wall each fail with the matching error code.
+- Each of the following fails with its matching error code:
+  - a shifted run
+  - a deleted run
+  - a lengthened run
+  - a duplicated overlapping wall
+  - a run downgraded to `IfcWall`
+  - a rectangle profile replaced by a polygon
+  - a connection point moved off its junction
 
 **Existing tests** whose expectations change legitimately (for example
 the host wall volume in `test_semantic_ifc.py`) are updated with a one-line
@@ -310,9 +411,12 @@ reason in the commit.
 
 - Full suite passes (baseline 253 passed, 8 skipped).
 - All 10 sample DXFs re-run with the current settings (`--walls`,
-  `--no_vision`, `--units-per-foot 12` for `PLAN` and `Floor Plan`). For each:
-  exit code, checker result, joined vs untrimmed junction counts, and total
-  overlap (must be 0).
+  `--no_vision`, `--units-per-foot 12` for `PLAN` and `Floor Plan`). For each
+  run, record:
+  - the exit code and checker result;
+  - joined vs untrimmed junction counts;
+  - rectangle vs polygon run profiles;
+  - total overlap, which must be 0.
 - One Blender package built and a corner, a T and an X inspected against the
   sketch.
 
@@ -327,3 +431,6 @@ passes the new checker.
   profiles" (a segment wall partly covered by a `WP:` profile). Separate bug.
 - Porting to `feature/dxf-layer-classification`.
 - Joins involving `WP:` profile walls.
+- Checking the files in Revit and Archicad. Not available in this
+  environment; the parametric cues in §1 are included so those tools have
+  what IFC defines, but their import behaviour is unverified.
