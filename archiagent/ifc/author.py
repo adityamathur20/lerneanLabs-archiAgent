@@ -99,6 +99,45 @@ def author_building(models: tuple[BuildingModel, ...] | list[BuildingModel],
     return out_path
 
 
+def _restore_rectangle(f, wall):
+    """Rewrite a regenerated outline as a rectangle profile when it still is one.
+
+    Regeneration always emits a polyline profile, even for a butt joint between
+    perpendicular walls, which would drop the wall's parametric dimensions.
+    """
+    body = next(r for r in wall.Representation.Representations
+                if r.RepresentationIdentifier == "Body")
+    item = body.Items[0]
+    if not item.is_a("IfcExtrudedAreaSolid"):
+        return False
+    profile = item.SweptArea
+    if not profile.is_a("IfcArbitraryClosedProfileDef"):
+        return profile.is_a("IfcRectangleProfileDef")
+    curve = profile.OuterCurve
+    points = ([tuple(p) for p in curve.Points.CoordList] if curve.is_a("IfcIndexedPolyCurve")
+              else [tuple(p.Coordinates) for p in curve.Points])
+    if points and math.dist(points[0], points[-1]) < 1e-9:
+        points = points[:-1]
+    if len(points) < 4:
+        return False
+    x0, x1 = min(p[0] for p in points), max(p[0] for p in points)
+    y0, y1 = min(p[1] for p in points), max(p[1] for p in points)
+    # An outline fills its bounding box only when it is a rectangle. Extending a
+    # wall to the corner it owns leaves a redundant vertex along an edge, so
+    # counting vertices would reject a rectangle; an angled joint never fills it.
+    area = abs(sum(a[0]*b[1] - b[0]*a[1]
+                   for a, b in zip(points, points[1:] + points[:1]))) / 2
+    if abs(area - (x1 - x0) * (y1 - y0)) > 1e-12:
+        return False
+    item.SweptArea = f.create_entity(
+        "IfcRectangleProfileDef", ProfileType="AREA",
+        Position=f.createIfcAxis2Placement2D(
+            f.createIfcCartesianPoint(((x0 + x1) / 2, (y0 + y1) / 2)), None),
+        XDim=x1 - x0, YDim=y1 - y0)
+    ifcopenshell.util.element.remove_deep2(f, profile)
+    return True
+
+
 def _palette_class(ifc_class):
     """Wall subtypes share the IfcWall presentation preset."""
     return "IfcWall" if ifc_class.startswith("IfcWall") else ifc_class
@@ -137,21 +176,6 @@ def _author_plan(f, body, axis, building, model, presentation, layer_sets):
             values["AppearancePreset"] = PRESENTATION_PALETTE[_palette_class(product.is_a())][0]
         pset = run("pset.add_pset", f, product=product, name="ArchiAgent_Provenance")
         run("pset.edit_pset", f, pset=pset, properties=values)
-
-    from archiagent.validate import validate
-    report_issues = tuple(dict.fromkeys((*model.issues, *validate(model))))
-    provenance(storey, {
-        "ExportStatus": "draft" if any(i.severity == "error" for i in report_issues) else "geometry-checked",
-        "ElevationAssumed": model.elevation_ft is None,
-        "AssumptionsJSON": json.dumps([asdict(a) for a in model.assumptions]),
-        "DimensionChecksJSON": json.dumps([asdict(d) for d in model.dimension_checks]),
-        "IssuesJSON": json.dumps([asdict(i) for i in report_issues]),
-        "SymbolsJSON": json.dumps([asdict(s) for s in model.symbols]),
-        "EndpointAdjustmentsJSON": json.dumps([asdict(a) for a in model.endpoint_adjustments]),
-        "RepairSnapIn": model.repair_snap_in,
-        "RepairExtendIn": model.repair_extend_in,
-        "JointGeometry": "Separate sweeps; physical joint overlaps are not trimmed",
-    })
 
     def entity(cls, name, solid, loc, *, space=False, predefined_type=None):
         kwargs = {"ifc_class": cls, "name": name}
@@ -269,12 +293,33 @@ def _author_plan(f, body, axis, building, model, presentation, layer_sets):
     # connections; that is what trims the joint. It replaces the styled item.
     joined = {index for connection in layout.connections
               for index in (connection.relating, connection.related)}
+    polygon_profiles = 0
     for index in sorted(joined):
         wall = wall_entities[layout.runs[index].members[0]]
         run("geometry.regenerate_wall_representation", f, wall=wall)
+        polygon_profiles += 0 if _restore_rectangle(f, wall) else 1
         regenerated = next(r for r in wall.Representation.Representations
                            if r.RepresentationIdentifier == "Body")
         presentation.assign("IfcWall", regenerated.Items[0])
+
+    # Authored after the joints, because the joint facts below are only known
+    # once every run has been connected and regenerated.
+    from archiagent.validate import validate
+    report_issues = tuple(dict.fromkeys((*model.issues, *validate(model))))
+    provenance(storey, {
+        "ExportStatus": "draft" if any(i.severity == "error" for i in report_issues) else "geometry-checked",
+        "ElevationAssumed": model.elevation_ft is None,
+        "AssumptionsJSON": json.dumps([asdict(a) for a in model.assumptions]),
+        "DimensionChecksJSON": json.dumps([asdict(d) for d in model.dimension_checks]),
+        "IssuesJSON": json.dumps([asdict(i) for i in report_issues]),
+        "SymbolsJSON": json.dumps([asdict(s) for s in model.symbols]),
+        "EndpointAdjustmentsJSON": json.dumps([asdict(a) for a in model.endpoint_adjustments]),
+        "RepairSnapIn": model.repair_snap_in,
+        "RepairExtendIn": model.repair_extend_in,
+        "JointGeometry": "Butt joints; intersection owned by one wall",
+        "UntrimmedJunctionsJSON": json.dumps([list(p) for p in layout.untrimmed]),
+        "NonRectangularWallProfiles": polygon_profiles,
+    })
 
     for op in model.openings:
         host = model.walls[op.host_wall_index]

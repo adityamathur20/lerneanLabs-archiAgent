@@ -102,5 +102,65 @@ class WallJointGeometryChecks(unittest.TestCase):
             box(0, -.375, 10, .375), box(5-.25, -4, 5+.25, -.375), box(5-.25, .375, 5+.25, 4)]))
 
 
+class WallJointProvenanceChecks(unittest.TestCase):
+    """Joined walls stay parametric, and what could not be joined is reported."""
+
+    def storey_provenance(self, f):
+        return ifcopenshell.util.element.get_psets(
+            f.by_type("IfcBuildingStorey")[0])["ArchiAgent_Provenance"]
+
+    def test_joined_walls_keep_rectangle_profiles_and_report_exceptions(self):
+        f, directory = author([((0, 0), (5, 0), .5), ((5, 0), (5, -4), .75)])
+        self.addCleanup(directory.cleanup)
+        for wall in f.by_type("IfcWall"):
+            body = next(r for r in wall.Representation.Representations
+                        if r.RepresentationIdentifier == "Body")
+            self.assertEqual(body.Items[0].SweptArea.is_a(), "IfcRectangleProfileDef")
+        storey = self.storey_provenance(f)
+        self.assertEqual(storey["JointGeometry"], "Butt joints; intersection owned by one wall")
+        self.assertEqual(storey["NonRectangularWallProfiles"], 0)
+        self.assertEqual(storey["UntrimmedJunctionsJSON"], "[]")
+
+    def test_angled_joint_keeps_a_polygon_and_is_counted(self):
+        f, directory = author([((0, 0), (5, 0), .5), ((5, 0), (8, 3), .5)])
+        self.addCleanup(directory.cleanup)
+        self.assertGreater(self.storey_provenance(f)["NonRectangularWallProfiles"], 0)
+
+    def test_a_thickness_step_is_reported_as_an_untrimmed_junction(self):
+        f, directory = author([((0, 0), (5, 0), .5), ((5, 0), (9, 0), .75)])
+        self.addCleanup(directory.cleanup)
+        self.assertEqual(self.storey_provenance(f)["UntrimmedJunctionsJSON"], "[[5.0, 0.0]]")
+
+    def test_voids_styles_and_profile_walls_survive_regeneration(self):
+        import ifcopenshell.validate
+
+        from archiagent.geometry.profiles import WallProfile
+        from archiagent.semantic import Opening, SymbolInstance
+
+        profile = WallProfile("wp-test", ((6, 2), (6, 6), (6.5, 6), (6.5, 3), (8, 3), (8, 2), (6, 2)),
+                              (), "walls", ("cad:p",), "native-wall-face", "accepted_by_rule")
+        f, directory = author(
+            [((0, 0), (5, 0), .5), ((5, 0), (5, -4), .75)],
+            symbols=(SymbolInstance("d1", "door", (2.5, 0.), 2., .5, source_ids=("cad:d",),
+                                    evidence="block", confidence=1.),),
+            openings=(Opening("o1", "door", 0, (1.5, 0.), (3.5, 0.), 7., symbol_id="d1",
+                              assumed_height=False),),
+            wall_profiles=(profile,))
+        self.addCleanup(directory.cleanup)
+        host = f.by_type("IfcOpeningElement")[0].VoidsElements[0].RelatingBuildingElement
+        self.assertEqual(host.Name, "W000")
+        outline_wall = next(w for w in f.by_type("IfcWall") if w.Name.startswith("WP:"))
+        self.assertEqual(outline_wall.is_a(), "IfcWall")
+        styled = {item.Item for item in f.by_type("IfcStyledItem")}
+        for wall in f.by_type("IfcWall"):
+            body = next(r for r in wall.Representation.Representations
+                        if r.RepresentationIdentifier == "Body")
+            self.assertIn(body.Items[0], styled)
+        logger = ifcopenshell.validate.json_logger()
+        ifcopenshell.validate.validate(f, logger, express_rules=True)
+        self.assertEqual([s for s in logger.statements
+                          if str(s.get("level", "")).lower() in {"error", "critical"}], [])
+
+
 if __name__ == "__main__":
     unittest.main()
