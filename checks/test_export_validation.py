@@ -78,6 +78,75 @@ class ExportValidationChecks(unittest.TestCase):
         self.assertTrue(report["passed"], report["errors"])
         self.assertEqual(report["counts"]["IfcWall"], {"expected": 2, "actual": 2})
 
+    def _joined(self, name):
+        """An L corner: W000 stops at W001, which owns the intersection."""
+        from checks.test_wall_joins_fixtures import model_with
+
+        model = model_with([((0, 0), (5, 0), .5), ((5, 0), (5, -4), .75)])
+        path = Path(self.directory.name)/name
+        author_ifc(model, path)
+        return model, path
+
+    def _codes(self, model, path):
+        return {e["code"] for e in validate_export(path, (model,))["errors"]}
+
+    def test_downgraded_wall_class_fails(self):
+        model, path = self._joined("downgrade.ifc")
+        path.write_text(path.read_text().replace("IFCWALLSTANDARDCASE(", "IFCWALL("))
+        self.assertIn("wall_class_mismatch", self._codes(model, path))
+
+    def test_lost_axis_representation_fails(self):
+        model, path = self._joined("axis.ifc")
+        f = ifcopenshell.open(str(path))
+        wall = f.by_type("IfcWall")[0]
+        wall.Representation.Representations = tuple(
+            r for r in wall.Representation.Representations
+            if r.RepresentationIdentifier != "Axis")
+        f.write(str(path))
+        self.assertIn("wall_parametric_data_missing", self._codes(model, path))
+
+    def test_polygon_profile_on_a_rectangular_run_fails(self):
+        model, path = self._joined("polygon.ifc")
+        f = ifcopenshell.open(str(path))
+        item = next(r for r in f.by_type("IfcWall")[0].Representation.Representations
+                    if r.RepresentationIdentifier == "Body").Items[0]
+        rectangle = item.SweptArea
+        x, y = rectangle.Position.Location.Coordinates if rectangle.Position else (0., 0.)
+        hx, hy = rectangle.XDim/2, rectangle.YDim/2
+        ring = [(x-hx, y-hy), (x+hx, y-hy), (x+hx, y+hy), (x-hx, y+hy), (x-hx, y-hy)]
+        item.SweptArea = f.create_entity(
+            "IfcArbitraryClosedProfileDef", ProfileType="AREA",
+            OuterCurve=f.createIfcPolyline([f.createIfcCartesianPoint(p) for p in ring]))
+        f.write(str(path))
+        self.assertIn("wall_profile_not_parametric", self._codes(model, path))
+
+    def test_missing_connection_point_fails(self):
+        model, path = self._joined("connection.ifc")
+        f = ifcopenshell.open(str(path))
+        f.by_type("IfcRelConnectsPathElements")[0].ConnectionGeometry = None
+        f.write(str(path))
+        self.assertIn("connection_geometry_mismatch", self._codes(model, path))
+
+    def test_shifted_wall_overlaps_its_neighbour(self):
+        model, path = self._joined("shift.ifc")
+        f = ifcopenshell.open(str(path))
+        wall = next(w for w in f.by_type("IfcWall") if w.Name == "W000")
+        location = wall.ObjectPlacement.RelativePlacement.Location
+        x, y, elevation = location.Coordinates
+        location.Coordinates = (x+.2, y, elevation)
+        f.write(str(path))
+        self.assertIn("wall_overlap", self._codes(model, path))
+
+    def test_missing_wall_is_reported_as_a_coverage_gap(self):
+        model, path = self._joined("missing.ifc")
+        f = ifcopenshell.open(str(path))
+        wall = next(w for w in f.by_type("IfcWall") if w.Name == "W001")
+        for inverse in list(f.get_inverse(wall)):
+            f.remove(inverse)
+        f.remove(wall)
+        f.write(str(path))
+        self.assertIn("wall_coverage_mismatch", self._codes(model, path))
+
 
 if __name__=="__main__":
     unittest.main()

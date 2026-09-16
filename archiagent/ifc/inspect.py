@@ -10,9 +10,12 @@ from collections import Counter
 import math
 from pathlib import Path
 
+import numpy
+
 import ifcopenshell
 import ifcopenshell.geom
 import ifcopenshell.util.element
+import ifcopenshell.util.placement
 import ifcopenshell.util.shape
 import ifcopenshell.validate
 from shapely.geometry import Polygon, box
@@ -27,6 +30,7 @@ PHYSICAL_CLASSES = ("IfcWall", "IfcSlab", "IfcDoor", "IfcWindow", "IfcColumn", "
 VOLUME_ABS_TOL_M3 = 1e-8
 VOLUME_REL_TOL = 1e-5
 BOUNDS_TOL_M = 1e-5
+AREA_TOL_M2 = 1e-6
 
 
 def _scope(model):
@@ -163,6 +167,104 @@ def _json_safe(value):
     if isinstance(value,(list,tuple)):
         return [_json_safe(v) for v in value]
     return str(value)
+
+
+def _check_joins(f, models, error):
+    """Verify the parametric wall structure, and that solids tile the model walls.
+
+    Joined walls are only as good as their joints: the authored solids must
+    cover the model's wall area exactly once, and each wall must keep the axis,
+    layer set and profile a BIM tool needs to re-join it.
+    """
+    from shapely.strtree import STRtree
+
+    settings = ifcopenshell.geom.settings()
+    settings.set("use-world-coords", True)
+    for model in models:
+        layout = build_runs(model)
+        shapes = run_footprints(layout, model)
+        scope = _scope(model)
+        by_name = {p.Name: p for p in f.by_type("IfcWall") if _product_scope(p) == scope}
+        footprints = {}
+        for index, wall_run in enumerate(layout.runs):
+            product = by_name.get(wall_run.id)
+            if product is None:
+                continue
+            label = f"{product.is_a()} #{product.id()} {product.Name}"
+            if not product.is_a("IfcWallStandardCase"):
+                error("wall_class_mismatch", label, "a straight wall run must be IfcWallStandardCase")
+            representations = product.Representation.Representations if product.Representation else ()
+            identifiers = {r.RepresentationIdentifier for r in representations}
+            usage = ifcopenshell.util.element.get_material(product)
+            thickness = wall_run.thickness_ft*FT
+            if (not usage or not usage.is_a("IfcMaterialLayerSetUsage") or {"Axis", "Body"}-identifiers
+                    or abs(sum(l.LayerThickness for l in usage.ForLayerSet.MaterialLayers)-thickness) > BOUNDS_TOL_M
+                    or abs(usage.OffsetFromReferenceLine+thickness/2) > BOUNDS_TOL_M):
+                error("wall_parametric_data_missing", label,
+                      "run needs Axis and Body representations and a layer set centred on its axis")
+            body = next((r for r in representations if r.RepresentationIdentifier == "Body"), None)
+            if body is None or not body.Items:
+                continue
+            # A trimmed outline is still a rectangle unless the joint is angled.
+            shape = shapes[index]
+            if (abs(shape.area-shape.minimum_rotated_rectangle.area) <= 1e-9
+                    and not body.Items[0].SweptArea.is_a("IfcRectangleProfileDef")):
+                error("wall_profile_not_parametric", label,
+                      "a rectangular run must use IfcRectangleProfileDef")
+            try:
+                solid = ifcopenshell.geom.create_shape(settings, product)
+                verts, faces = list(solid.geometry.verts), list(solid.geometry.faces)
+                triangles = [Polygon([(verts[i*3]/FT, verts[i*3+1]/FT) for i in faces[t:t+3]])
+                             for t in range(0, len(faces), 3)]
+                footprints[wall_run.id] = unary_union([t for t in triangles if t.is_valid and t.area > 0])
+            except Exception as exc:
+                error("solid_geometry_failed", label, exc)
+        # A junction that could not be joined may overlap or leave a gap there.
+        widest = max((r.thickness_ft for r in layout.runs), default=0.)
+        allowance = unary_union([box(p[0]-widest, p[1]-widest, p[0]+widest, p[1]+widest)
+                                 for p in layout.untrimmed])
+        names = sorted(footprints)
+        index_of = {wall_run.id: index for index, wall_run in enumerate(layout.runs)}
+        tree = STRtree([footprints[name] for name in names])
+        for position, name in enumerate(names):
+            for other in sorted(int(i) for i in tree.query(footprints[name])):
+                if other <= position:
+                    continue
+                # A model without junctions predicts overlapping corners, and the
+                # file matching that prediction is not an authoring fault.
+                predicted = shapes[index_of[name]].intersection(shapes[index_of[names[other]]])
+                overlap = (footprints[name].intersection(footprints[names[other]])
+                           .difference(allowance).difference(predicted))
+                if overlap.area*FT*FT > AREA_TOL_M2:
+                    error("wall_overlap", f"{name}/{names[other]}",
+                          f"walls share {overlap.area*FT*FT:.3g}m2 outside any untrimmed junction")
+        if layout.runs:
+            ideal = unary_union([shapes[i] for i in range(len(layout.runs))])
+            missed = unary_union(list(footprints.values())).symmetric_difference(ideal).difference(allowance)
+            if missed.area*FT*FT > AREA_TOL_M2:
+                error("wall_coverage_mismatch", scope[0] or "model",
+                      f"authored walls differ from the model wall area by {missed.area*FT*FT:.3g}m2")
+
+    for relationship in f.by_type("IfcRelConnectsPathElements"):
+        label = f"IfcRelConnectsPathElements #{relationship.id()}"
+        geometry = relationship.ConnectionGeometry
+        if geometry is None or not geometry.is_a("IfcConnectionPointGeometry"):
+            error("connection_geometry_mismatch", label, "connection must carry its junction point")
+            continue
+        points = []
+        for element, point in ((relationship.RelatingElement, geometry.PointOnRelatingElement),
+                               (relationship.RelatedElement, geometry.PointOnRelatedElement)):
+            if point is None:
+                error("connection_geometry_mismatch", label,
+                      "both connected walls need the junction point")
+                break
+            matrix = ifcopenshell.util.placement.get_local_placement(element.ObjectPlacement)
+            values = list(point.Coordinates)+[0.0, 0.0, 0.0]
+            points.append((matrix @ numpy.array([values[0], values[1], values[2], 1.0]))[:3])
+        else:
+            if math.dist(points[0][:2], points[1][:2]) > BOUNDS_TOL_M:
+                error("connection_geometry_mismatch", label,
+                      "the two connection points do not coincide in world coordinates")
 
 
 def validate_export(path, models):
@@ -314,5 +416,6 @@ def validate_export(path, models):
         if (len(parents)!=1 or not parents[0].RelatingObject.is_a("IfcBuildingStorey")
                 or _product_scope(parents[0].RelatingObject)!=_product_scope(space)):
             error("invalid_space_storey",space.id(),"space must aggregate into its source storey")
+    _check_joins(f, models, error)
     report["passed"] = not report["errors"]
     return _json_safe(report)
