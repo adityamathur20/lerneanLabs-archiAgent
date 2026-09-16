@@ -21,7 +21,10 @@ def assign_stable_ids(f, models):
     for product in f.by_type("IfcObjectDefinition"):
         props = ifcopenshell.util.element.get_pset(product, "ArchiAgent_Provenance") or {}
         # Absolute source/output paths must never alter model identity.
-        keys[product.id()] = (product.is_a(), props.get("SourceSHA256", ""),
+        # A wall keys as IfcWall whatever its subtype, so adopting
+        # IfcWallStandardCase does not change an unchanged wall's GlobalId.
+        ifc_class = "IfcWall" if product.is_a("IfcWall") else product.is_a()
+        keys[product.id()] = (ifc_class, props.get("SourceSHA256", ""),
                               props.get("RegionId", ""), product.Name or "")
         if product.is_a() in {"IfcProject", "IfcSite", "IfcBuilding"}:
             keys[product.id()] = (product.is_a(), "singleton")

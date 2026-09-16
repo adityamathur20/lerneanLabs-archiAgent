@@ -30,7 +30,11 @@ def wall_layout(model):
 
 def host_name(model, wall_index):
     profiles, _, mapping = wall_layout(model)
-    return f"WP:{profiles[mapping[wall_index]].id}" if wall_index in mapping else f"W{wall_index:03d}"
+    if wall_index in mapping:
+        return f"WP:{profiles[mapping[wall_index]].id}"
+    from archiagent.ifc.wall_runs import build_runs
+    layout = build_runs(model)
+    return layout.runs[layout.run_of_wall[wall_index]].id
 
 
 def opening_footprint(model, opening):

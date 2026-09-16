@@ -17,13 +17,16 @@ import ifcopenshell.api.aggregate
 import ifcopenshell.api.context
 import ifcopenshell.api.feature
 import ifcopenshell.api.geometry
+import ifcopenshell.api.material
 import ifcopenshell.api.pset
 import ifcopenshell.api.root
 import ifcopenshell.api.spatial
 import ifcopenshell.api.unit
 import ifcopenshell.guid
+import ifcopenshell.util.element
 import ifcopenshell.util.shape_builder
 
+from archiagent.ifc.wall_runs import build_runs
 from archiagent.model import BuildingModel
 from archiagent.ifc.appearance import APPEARANCE_BASIS, PRESENTATION_PALETTE, PresentationStyles
 
@@ -75,13 +78,18 @@ def author_building(models: tuple[BuildingModel, ...] | list[BuildingModel],
     ctx = run("context.add_context", f, context_type="Model")
     body = run("context.add_context", f, context_type="Model",
                context_identifier="Body", target_view="MODEL_VIEW", parent=ctx)
+    # Joint regeneration reads the wall axis from the Plan/Axis context.
+    plan = run("context.add_context", f, context_type="Plan")
+    axis = run("context.add_context", f, context_type="Plan",
+               context_identifier="Axis", target_view="GRAPH_VIEW", parent=plan)
     site = run("root.create_entity", f, ifc_class="IfcSite", name="Site")
     building = run("root.create_entity", f, ifc_class="IfcBuilding", name="Building")
     run("aggregate.assign_object", f, products=[site], relating_object=project)
     run("aggregate.assign_object", f, products=[building], relating_object=site)
     presentation = PresentationStyles(f)
+    layer_sets = {}  # shared by every storey, like the presentation styles
     for model in models:
-        _author_plan(f, body, building, model, presentation)
+        _author_plan(f, body, axis, building, model, presentation, layer_sets)
     from archiagent.ifc.identity import assign_stable_ids
     assign_stable_ids(f, models)
     # No successful export may conceal an empty represented physical element.
@@ -93,7 +101,12 @@ def author_building(models: tuple[BuildingModel, ...] | list[BuildingModel],
     return out_path
 
 
-def _author_plan(f, body, building, model, presentation):
+def _palette_class(ifc_class):
+    """Wall subtypes share the IfcWall presentation preset."""
+    return "IfcWall" if ifc_class.startswith("IfcWall") else ifc_class
+
+
+def _author_plan(f, body, axis, building, model, presentation, layer_sets):
     sb = ifcopenshell.util.shape_builder.ShapeBuilder(f)
     z = (model.elevation_ft if model.elevation_ft is not None else 0.0) * FT
     height_m = model.wall_height_ft * FT
@@ -121,9 +134,9 @@ def _author_plan(f, body, building, model, presentation):
             "ScaleUnitsPerFoot": model.scale.units_per_foot,
         }
         values.update(extra or {})
-        if product.is_a() in PRESENTATION_PALETTE:
+        if _palette_class(product.is_a()) in PRESENTATION_PALETTE:
             values["AppearanceBasis"] = APPEARANCE_BASIS
-            values["AppearancePreset"] = PRESENTATION_PALETTE[product.is_a()][0]
+            values["AppearancePreset"] = PRESENTATION_PALETTE[_palette_class(product.is_a())][0]
         pset = run("pset.add_pset", f, product=product, name="ArchiAgent_Provenance")
         run("pset.edit_pset", f, pset=pset, properties=values)
 
@@ -153,14 +166,18 @@ def _author_plan(f, body, building, model, presentation):
             run("spatial.assign_container", f, products=[obj], relating_structure=storey)
         run("geometry.assign_representation", f, product=obj,
             representation=sb.get_representation(body, [solid]))
-        presentation.assign(cls, solid)
+        presentation.assign(_palette_class(cls), solid)
         obj.ObjectPlacement = loc
         return obj
 
     def rectangle_solid(length, thickness, height):
-        return sb.extrude(sb.rectangle(size=(length, thickness),
-                                      position=(0.0, -thickness / 2)),
-                          magnitude=height, extrusion_vector=(0.0, 0.0, 1.0))
+        # A parametric profile: BIM tools read the wall's length and thickness
+        # from it, and joint regeneration rewrites it only where it must.
+        profile = f.create_entity("IfcRectangleProfileDef", ProfileType="AREA",
+                                  Position=f.createIfcAxis2Placement2D(
+                                      f.createIfcCartesianPoint((length / 2, 0.0)), None),
+                                  XDim=length, YDim=thickness)
+        return sb.extrude(profile, magnitude=height, extrusion_vector=(0.0, 0.0, 1.0))
 
     def polygon_solid(boundary, holes, height, down=False):
         def curve(ring, clockwise=False):
@@ -193,23 +210,51 @@ def _author_plan(f, body, building, model, presentation):
                           "RepresentationBasis": "Accepted source wall-face polygon",
                           "HeightEvidence": "See storey assumptions; height is not independently verified"})
         profile_entities[i] = wall
-    wall_entities = {}
-    for idx, w in enumerate(model.walls):
-        if idx in profile_mapping:
-            wall_entities[idx] = profile_entities[profile_mapping[idx]]
-            continue
-        angle = math.atan2(w.end[1] - w.start[1], w.end[0] - w.start[0])
-        wall = entity("IfcWall", f"W{idx:03d}",
-                      rectangle_solid(w.length_ft * FT, w.thickness_ft * FT, height_m),
-                      placement(w.start[0] * FT, w.start[1] * FT, angle=angle))
-        provenance(wall, {"SourceLayer": w.source_layer, "Detector": w.detector,
-                          "SourceIds": json.dumps(w.source_ids),
-                          "ThicknessSource": w.thickness_source,
+    def layer_set(thickness_m, priority):
+        """One layer set per thickness and priority; priority decides an L corner."""
+        key = (round(thickness_m, 9), priority)
+        if key not in layer_sets:
+            label = PRESENTATION_PALETTE["IfcWall"][0]
+            if "material" not in layer_sets:
+                layer_sets["material"] = run("material.add_material", f, name=label)
+            material_set = run("material.add_material_set", f,
+                               name=f"{label} {thickness_m*1000:.0f}mm P{priority}",
+                               set_type="IfcMaterialLayerSet")
+            layer = run("material.add_layer", f, layer_set=material_set,
+                        material=layer_sets["material"])
+            run("material.edit_layer", f, layer=layer,
+                attributes={"LayerThickness": thickness_m, "Priority": priority})
+            layer_sets[key] = material_set
+        return layer_sets[key]
+
+    wall_entities = {idx: profile_entities[profile_index]
+                     for idx, profile_index in profile_mapping.items()}
+    layout = build_runs(model)
+    for wall_run in layout.runs:
+        angle = math.atan2(wall_run.end[1] - wall_run.start[1], wall_run.end[0] - wall_run.start[0])
+        length_m, thickness_m = wall_run.length_ft * FT, wall_run.thickness_ft * FT
+        wall = entity("IfcWallStandardCase", wall_run.id,
+                      rectangle_solid(length_m, thickness_m, height_m),
+                      placement(wall_run.start[0] * FT, wall_run.start[1] * FT, angle=angle))
+        run("geometry.assign_representation", f, product=wall,
+            representation=f.createIfcShapeRepresentation(
+                axis, "Axis", "Curve2D",
+                [f.createIfcPolyline([f.createIfcCartesianPoint((0.0, 0.0)),
+                                      f.createIfcCartesianPoint((length_m, 0.0))])]))
+        run("material.assign_material", f, products=[wall],
+            type="IfcMaterialLayerSetUsage", material=layer_set(thickness_m, wall_run.priority))
+        ifcopenshell.util.element.get_material(wall).OffsetFromReferenceLine = -thickness_m / 2
+        member = model.walls[wall_run.members[0]]
+        provenance(wall, {"SourceLayer": wall_run.source_layer, "Detector": member.detector,
+                          "SourceIds": json.dumps(list(wall_run.source_ids)),
+                          "ModelWallIndices": json.dumps(list(wall_run.members)),
+                          "ThicknessSource": member.thickness_source,
                           "HeightFt": model.wall_height_ft,
                           "HeightEvidence": "See storey assumptions; height is not independently verified",
-                          "ThicknessIn": w.thickness_ft * 12,
+                          "ThicknessIn": wall_run.thickness_ft * 12,
                           "ScaleMaxResidualIn": model.scale.max_residual_in})
-        wall_entities[idx] = wall
+        for i in wall_run.members:
+            wall_entities[i] = wall
 
     def connection_type(index, point):
         w = model.walls[index]

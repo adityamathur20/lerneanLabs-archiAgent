@@ -23,9 +23,13 @@ def test_authored_meshes_retain_reused_colors_transparency_and_identity(tmp_path
     path = author_building((model, upper), tmp_path / "styled.ifc")
     source = ifcopenshell.open(str(path))
     manifest = extract_ifc_meshes(path)
-    assert {e["class"] for e in manifest["elements"]} == set(PRESENTATION_PALETTE)
+    # Walls are authored as IfcWallStandardCase and share the IfcWall preset.
+    def preset_class(ifc_class):
+        return "IfcWall" if ifc_class.startswith("IfcWall") else ifc_class
+
+    assert {preset_class(e["class"]) for e in manifest["elements"]} == set(PRESENTATION_PALETTE)
     for element in manifest["elements"]:
-        _, rgb, transparency = PRESENTATION_PALETTE[element["class"]]
+        _, rgb, transparency = PRESENTATION_PALETTE[preset_class(element["class"])]
         assert element["materials"]
         for material in element["materials"]:
             assert material["color"] == pytest.approx(rgb)
@@ -35,7 +39,8 @@ def test_authored_meshes_retain_reused_colors_transparency_and_identity(tmp_path
         assert "not a verified" in props["AppearanceBasis"]
     # Concrete is shared by columns/beams; styles are reused across storeys.
     assert len(source.by_type("IfcSurfaceStyle")) == len(set(PRESENTATION_PALETTE.values()))
-    assert not source.by_type("IfcMaterial")
+    # Wall layer sets require a material; one is shared by every set and storey.
+    assert [m.Name for m in source.by_type("IfcMaterial")] == ["Plaster"]
     report = validate_export(path, (model, upper))
     assert report["passed"], report["errors"]
     again = ifcopenshell.open(str(author_building((model, upper), tmp_path / "replay.ifc")))
