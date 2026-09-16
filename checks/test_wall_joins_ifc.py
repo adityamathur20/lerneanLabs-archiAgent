@@ -131,6 +131,26 @@ class WallJointProvenanceChecks(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.assertEqual(self.storey_provenance(f)["UntrimmedJunctionsJSON"], "[[5.0, 0.0]]")
 
+    def test_every_connection_carries_its_junction_point(self):
+        import ifcopenshell.util.placement as placement
+        import numpy
+
+        f, directory = author([((0, 0), (5, 0), .75), ((5, 0), (10, 0), .75),
+                               ((5, 0), (5, -4), .5)])
+        self.addCleanup(directory.cleanup)
+        relationships = f.by_type("IfcRelConnectsPathElements")
+        self.assertEqual(len(relationships), 1)
+        for relationship in relationships:
+            geometry = relationship.ConnectionGeometry
+            self.assertEqual(geometry.is_a(), "IfcConnectionPointGeometry")
+            for element, point in ((relationship.RelatingElement, geometry.PointOnRelatingElement),
+                                   (relationship.RelatedElement, geometry.PointOnRelatedElement)):
+                matrix = placement.get_local_placement(element.ObjectPlacement)
+                values = list(point.Coordinates) + [0., 0., 0.]
+                world = (matrix @ numpy.array([values[0], values[1], values[2], 1.]))[:2] / FT
+                self.assertAlmostEqual(world[0], 5, places=6)
+                self.assertAlmostEqual(world[1], 0, places=6)
+
     def test_voids_styles_and_profile_walls_survive_regeneration(self):
         import ifcopenshell.validate
 

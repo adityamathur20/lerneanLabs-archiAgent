@@ -10,6 +10,8 @@ import math
 from dataclasses import asdict
 from pathlib import Path
 
+import numpy
+
 import ifcopenshell
 import ifcopenshell.api
 import ifcopenshell.api.aggregate
@@ -22,6 +24,7 @@ import ifcopenshell.api.root
 import ifcopenshell.api.spatial
 import ifcopenshell.api.unit
 import ifcopenshell.util.element
+import ifcopenshell.util.placement
 import ifcopenshell.util.shape_builder
 
 from archiagent.ifc.wall_runs import build_runs
@@ -301,6 +304,22 @@ def _author_plan(f, body, axis, building, model, presentation, layer_sets):
         regenerated = next(r for r in wall.Representation.Representations
                            if r.RepresentationIdentifier == "Body")
         presentation.assign("IfcWall", regenerated.Items[0])
+
+    # Regeneration can move a wall's placement, so the junction point is written
+    # into each wall's own coordinates only now.
+    for connection, relationship in relationships:
+        if relationship is None:
+            continue
+        points = []
+        for element in (relationship.RelatingElement, relationship.RelatedElement):
+            inverse = numpy.linalg.inv(
+                ifcopenshell.util.placement.get_local_placement(element.ObjectPlacement))
+            local = inverse @ numpy.array(
+                [connection.point[0] * FT, connection.point[1] * FT, z, 1.0])
+            points.append(f.createIfcCartesianPoint(tuple(float(v) for v in local[:3])))
+        relationship.ConnectionGeometry = f.create_entity(
+            "IfcConnectionPointGeometry", PointOnRelatingElement=points[0],
+            PointOnRelatedElement=points[1])
 
     # Authored after the joints, because the joint facts below are only known
     # once every run has been connected and regenerated.
