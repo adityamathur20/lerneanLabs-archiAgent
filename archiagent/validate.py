@@ -93,9 +93,6 @@ def validate(model: BuildingModel) -> tuple[Issue, ...]:
             add("error", entity, "zero_length_wall", "wall length must be positive")
         if w.thickness_source == "default":
             add("warn", entity, "default_thickness", "wall thickness is assumed")
-    if model.junctions:
-        add("warn", "junctions", "joint_solids_untrimmed",
-            "IFC path relationships connect separate sweeps; physical overlaps are not trimmed")
     for j in model.junctions:
         finite(j.point, "junction")
         if any(not isinstance(i, int) or isinstance(i, bool) or i < 0 or i >= len(model.walls)

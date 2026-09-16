@@ -102,6 +102,16 @@ def author_building(models: tuple[BuildingModel, ...] | list[BuildingModel],
     return out_path
 
 
+def is_rectangular(area, bounding_area):
+    """Does an outline fill its bounding box, allowing for kernel precision?
+
+    Authoring and the reopened-IFC check must answer this the same way: an
+    absolute tolerance is unreachable on real coordinates, where a rectangle
+    misses its box by a few parts in 1e12, so the tolerance is relative.
+    """
+    return abs(area - bounding_area) <= max(area, bounding_area)*1e-9
+
+
 def _restore_rectangle(f, wall):
     """Rewrite a regenerated outline as a rectangle profile when it still is one.
 
@@ -130,7 +140,7 @@ def _restore_rectangle(f, wall):
     # counting vertices would reject a rectangle; an angled joint never fills it.
     area = abs(sum(a[0]*b[1] - b[0]*a[1]
                    for a, b in zip(points, points[1:] + points[:1]))) / 2
-    if abs(area - (x1 - x0) * (y1 - y0)) > 1e-12:
+    if not is_rectangular(area, (x1 - x0) * (y1 - y0)):
         return False
     item.SweptArea = f.create_entity(
         "IfcRectangleProfileDef", ProfileType="AREA",

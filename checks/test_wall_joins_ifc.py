@@ -182,5 +182,70 @@ class WallJointProvenanceChecks(unittest.TestCase):
                           if str(s.get("level", "")).lower() in {"error", "critical"}], [])
 
 
+class WallJoinRobustnessChecks(unittest.TestCase):
+    """What the sample drawings exposed that the square fixtures did not."""
+
+    def test_oblique_corner_matches_its_prediction(self):
+        from archiagent.ifc.inspect import validate_export
+
+        # SANJANA SURESH JI: walls meet at ~50 degrees. The owning wall reaches
+        # the far face of the wall stopping there, which is thickness/2 divided
+        # by sin(angle), and its end is cut on a slant rather than square.
+        model = model_with([((0, 0), (5, 0), .375), ((5, 0), (8, 3.6), .375)])
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name)/"oblique.ifc"
+        author_ifc(model, path)
+        report = validate_export(path, (model,))
+        self.assertTrue(report["passed"], report["errors"])
+
+    def test_material_layer_priorities_stay_within_the_ifc_range(self):
+        # VINAYAK APARTMENTS has 802 runs; IFC allows a layer priority of 0-100.
+        segments = [((i*2., 0.), (i*2.+1.5, 0.), .375) for i in range(60)]
+        segments += [((i*2., 10.), (i*2.+1.5, 10.), .5) for i in range(60)]
+        f, directory = author(segments)
+        self.addCleanup(directory.cleanup)
+        priorities = [layer.Priority for layer in f.by_type("IfcMaterialLayer")]
+        self.assertTrue(priorities)
+        self.assertTrue(all(0 <= p <= 100 for p in priorities), sorted(priorities)[-5:])
+
+    def test_a_near_rectangular_outline_is_still_written_as_a_rectangle(self):
+        from archiagent.ifc.author import _restore_rectangle
+
+        # Aiims Road: a regenerated outline misses its bounding box by ~2e-12
+        # square metres on real coordinates. That is a rectangle, and the
+        # checker treats it as one, so authoring must agree.
+        f, directory = author([((0, 0), (5, 0), .5)])
+        self.addCleanup(directory.cleanup)
+        wall = f.by_type("IfcWall")[0]
+        item = next(r for r in wall.Representation.Representations
+                    if r.RepresentationIdentifier == "Body").Items[0]
+        rectangle = item.SweptArea
+        x, y = rectangle.Position.Location.Coordinates if rectangle.Position else (0., 0.)
+        hx, hy = rectangle.XDim/2, rectangle.YDim/2
+        drift = 2e-12/(2*hy)  # shifts the area by ~2e-12 m2, as the drawings do
+        ring = [(x-hx, y-hy), (x+hx, y-hy), (x+hx+drift, y+hy), (x-hx, y+hy), (x-hx, y-hy)]
+        item.SweptArea = f.create_entity(
+            "IfcArbitraryClosedProfileDef", ProfileType="AREA",
+            OuterCurve=f.createIfcPolyline([f.createIfcCartesianPoint(p) for p in ring]))
+        self.assertTrue(_restore_rectangle(f, wall))
+        self.assertEqual(
+            next(r for r in wall.Representation.Representations
+                 if r.RepresentationIdentifier == "Body").Items[0].SweptArea.is_a(),
+            "IfcRectangleProfileDef")
+
+    def test_a_long_stem_does_not_notch_its_through_wall(self):
+        # The stem's line is longer than the through wall's, so ranking walls
+        # globally would let the stem outrank the wall it must stop at.
+        f, directory = author([((0, 0), (2, 0), .375), ((2, 0), (4, 0), .375),
+                               ((2, 0), (2, -20), .375)])
+        self.addCleanup(directory.cleanup)
+        through = next(w for w in f.by_type("IfcWall") if w.Name == "W000")
+        body = next(r for r in through.Representation.Representations
+                    if r.RepresentationIdentifier == "Body")
+        self.assertEqual(body.Items[0].SweptArea.is_a(), "IfcRectangleProfileDef")
+        self.assertAlmostEqual(footprint(through).area, 4*.375, places=6)
+
+
 if __name__ == "__main__":
     unittest.main()

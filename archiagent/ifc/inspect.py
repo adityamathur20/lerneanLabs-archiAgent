@@ -21,7 +21,7 @@ import ifcopenshell.validate
 from shapely.geometry import Polygon, box
 from shapely.ops import unary_union
 
-from archiagent.ifc.author import FT, SLAB_THICKNESS_FT
+from archiagent.ifc.author import FT, SLAB_THICKNESS_FT, is_rectangular
 from archiagent.ifc.profile_layout import host_name, profile_material_slices, wall_layout
 from archiagent.ifc.wall_runs import build_runs, run_footprints
 from archiagent.validate import GEOMETRY_EPS_FT
@@ -206,8 +206,9 @@ def _check_joins(f, models, error):
             if body is None or not body.Items:
                 continue
             # A trimmed outline is still a rectangle unless the joint is angled.
+            # The same predicate authoring uses, so the two cannot disagree.
             shape = shapes[index]
-            if (abs(shape.area-shape.minimum_rotated_rectangle.area) <= 1e-9
+            if (is_rectangular(shape.area, shape.minimum_rotated_rectangle.area)
                     and not body.Items[0].SweptArea.is_a("IfcRectangleProfileDef")):
                 error("wall_profile_not_parametric", label,
                       "a rectangular run must use IfcRectangleProfileDef")

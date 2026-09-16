@@ -58,6 +58,21 @@ class WallRunChecks(unittest.TestCase):
         self.assertGreater(next(r for r in tied.runs if r.start == (0, 0)).priority,
                            next(r for r in tied.runs if r.start == (5, 0)).priority)
 
+    def test_a_stem_parallel_to_its_through_wall_is_left_untrimmed(self):
+        # VINAYAK APARTMENTS: a thin wall continues along the line of a thick
+        # one. IfcOpenShell cannot join parallel walls, so proposing the joint
+        # would delete the thin wall from the prediction while the file keeps it.
+        # The real shape: a thick wall arrives at the node and continues, and a
+        # thin wall leaves along exactly the same span. The thin one is neither
+        # a partner (different thickness) nor a stem that can stop against it.
+        layout = build_runs(model_with([((0, 0), (5, 0), .75), ((5, 0), (10, 0), .75),
+                                        ((5, 0), (10, 0), .167)]))
+        thin_index = next(index for index, r in enumerate(layout.runs)
+                          if abs(r.thickness_ft - .167) < 1e-9)
+        self.assertEqual([c for c in layout.connections
+                          if thin_index in (c.relating, c.related)], [])
+        self.assertIn((5, 0), layout.untrimmed)
+
     def test_grouping_does_not_depend_on_the_order_segments_are_written(self):
         segments = [((0, 0), (5, 0), .5), ((5, 0), (10, 0), .5), ((5, 0), (5, 4), .5)]
         first = build_runs(model_with(segments))
