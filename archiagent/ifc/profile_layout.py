@@ -28,6 +28,23 @@ def wall_layout(model):
     return profiles, polygons, mapping
 
 
+def host_names(model):
+    """Every wall index mapped to its authored IFC wall name, in one pass.
+
+    Resolving names one at a time rebuilds the profile layout and the run
+    layout per call, which is quadratic in a drawing's walls once a caller
+    loops over openings.
+    """
+    from archiagent.ifc.wall_runs import build_runs
+
+    profiles, _, mapping = wall_layout(model)
+    layout = build_runs(model)
+    names = {index: f"WP:{profiles[profile].id}" for index, profile in mapping.items()}
+    for index, run in layout.run_of_wall.items():
+        names.setdefault(index, layout.runs[run].id)
+    return names
+
+
 def host_name(model, wall_index):
     profiles, _, mapping = wall_layout(model)
     if wall_index in mapping:

@@ -254,6 +254,39 @@ class WallJoinRobustnessChecks(unittest.TestCase):
         report = validate_export(path, (model,))
         self.assertTrue(report["passed"], report["errors"])
 
+    def test_validation_builds_the_run_layout_once_per_model(self):
+        import archiagent.ifc.wall_runs as wall_runs
+        from archiagent.ifc.inspect import validate_export
+        from archiagent.semantic import Opening, SymbolInstance
+
+        # VINAYAK APARTMENTS: host_name rebuilt the whole layout per opening, so
+        # 46 openings meant 46 rebuilds over 1081 walls -- 65s became 1768s.
+        model = model_with(
+            [((0, 0), (10, 0), .5), ((0, 0), (0, -8), .5)],
+            symbols=(SymbolInstance("d1", "door", (3.5, 0.), 3., .5, source_ids=("cad:a",),
+                                    evidence="block", confidence=1.),
+                     SymbolInstance("d2", "door", (0., -4.5), 3., .5, source_ids=("cad:b",),
+                                    evidence="block", confidence=1.)),
+            openings=(Opening("o1", "door", 1, (2., 0.), (5., 0.), 7.,
+                              symbol_id="d1", assumed_height=False),
+                      Opening("o2", "door", 0, (0., -6.), (0., -3.), 7.,
+                              symbol_id="d2", assumed_height=False)))
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name)/"layout.ifc"
+        author_ifc(model, path)
+
+        # Count the uncached worker: build_runs itself serves cache hits, so
+        # counting it would measure lookups rather than real rebuilds.
+        rebuilds = []
+        real = wall_runs._build_runs
+        wall_runs._build_runs = lambda m: (rebuilds.append(m), real(m))[1]
+        self.addCleanup(setattr, wall_runs, "_build_runs", real)
+        wall_runs._CACHE.clear()
+        self.addCleanup(wall_runs._CACHE.clear)
+        validate_export(path, (model,))
+        self.assertLessEqual(len(rebuilds), 1, f"rebuilt the layout {len(rebuilds)} times")
+
     def test_a_long_stem_does_not_notch_its_through_wall(self):
         # The stem's line is longer than the through wall's, so ranking walls
         # globally would let the stem outrank the wall it must stop at.

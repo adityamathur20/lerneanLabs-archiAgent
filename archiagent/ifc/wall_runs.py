@@ -260,7 +260,27 @@ def run_footprints(layout, model):
     return shapes
 
 
+_CACHE: list = []  # (model, layout) for the few models a run touches
+
+
 def build_runs(model) -> RunLayout:
+    """Group a model's walls into runs, reusing the last result for a model.
+
+    Authoring, the expectations and every host-name lookup ask for the same
+    layout, and rebuilding it per caller is quadratic in a drawing's walls.
+    BuildingModel is frozen, so a layout stays valid for as long as the model
+    object does; the entry holds the model itself, never a recycled id.
+    """
+    for cached_model, layout in _CACHE:
+        if cached_model is model:
+            return layout
+    layout = _build_runs(model)
+    _CACHE.append((model, layout))
+    del _CACHE[:-4]
+    return layout
+
+
+def _build_runs(model) -> RunLayout:
     _, _, profile_mapping = wall_layout(model)
     eligible = [i for i in range(len(model.walls)) if i not in profile_mapping]
     usable = set(eligible)

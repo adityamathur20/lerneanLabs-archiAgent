@@ -22,7 +22,7 @@ from shapely.geometry import Polygon, box
 from shapely.ops import unary_union
 
 from archiagent.ifc.author import FT, SLAB_THICKNESS_FT, is_rectangular
-from archiagent.ifc.profile_layout import host_name, profile_material_slices, wall_layout
+from archiagent.ifc.profile_layout import host_names, profile_material_slices, wall_layout
 from archiagent.ifc.wall_runs import build_runs, run_footprints
 from archiagent.validate import GEOMETRY_EPS_FT
 
@@ -391,6 +391,9 @@ def validate_export(path, models):
             report["coverage"]["represented_geometry_checked"] += int(record["volume_m3"] is not None)
     for key in expected.keys()-matched:
         error("missing_product",key,"model object is absent from IFC")
+    # Resolved once per model: doing it per opening rebuilds both layouts over
+    # every wall in the drawing.
+    names_by_model = {}
     seen_openings = set()
     for product in f.by_type("IfcOpeningElement"):
         key = (product.Name or "",_product_scope(product))
@@ -405,7 +408,10 @@ def validate_export(path, models):
             error("invalid_void_relationship",label,"opening must void exactly one host wall")
         else:
             host = voids[0].RelatingBuildingElement
-            if _key(host)!=("IfcWall",host_name(model, op.host_wall_index),_scope(model)):
+            if id(model) not in names_by_model:
+                names_by_model[id(model)] = host_names(model)
+            expected_host = names_by_model[id(model)].get(op.host_wall_index, "")
+            if _key(host)!=("IfcWall",expected_host,_scope(model)):
                 error("wrong_void_host",label,"opening voids a different wall from its semantic host")
         fillings = tuple(product.HasFillings)
         expected_fill = op.kind in {"door","window"}
