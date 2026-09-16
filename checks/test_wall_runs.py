@@ -73,6 +73,19 @@ class WallRunChecks(unittest.TestCase):
                           if thin_index in (c.relating, c.related)], [])
         self.assertIn((5, 0), layout.untrimmed)
 
+    def test_a_nearly_collinear_corner_is_left_untrimmed(self):
+        import math
+
+        # MB Panwar JI Revision 2: two walls meet at a hair's angle. Mitring
+        # them puts the joint kilometres away -- the authored wall spanned 7.7km
+        # -- because two nearly parallel faces meet far outside the drawing.
+        angle = math.radians(.05)
+        layout = build_runs(model_with([
+            ((0, 0), (5, 0), .75),
+            ((5, 0), (5 + 5*math.cos(angle), 5*math.sin(angle)), .75)]))
+        self.assertEqual(layout.connections, ())
+        self.assertIn((5, 0), layout.untrimmed)
+
     def test_grouping_does_not_depend_on_the_order_segments_are_written(self):
         segments = [((0, 0), (5, 0), .5), ((5, 0), (10, 0), .5), ((5, 0), (5, 4), .5)]
         first = build_runs(model_with(segments))

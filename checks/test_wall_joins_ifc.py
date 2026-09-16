@@ -234,6 +234,26 @@ class WallJoinRobustnessChecks(unittest.TestCase):
                  if r.RepresentationIdentifier == "Body").Items[0].SweptArea.is_a(),
             "IfcRectangleProfileDef")
 
+    def test_a_door_spanning_a_trimmed_wall_only_removes_material_that_exists(self):
+        from archiagent.ifc.inspect import validate_export
+        from archiagent.semantic import Opening, SymbolInstance
+
+        # MR RAJEEV JI TWANI JI W167: a doorway host is trimmed where it stops
+        # against another wall, so the part of the void past the trim removes
+        # nothing. Subtracting it over the untrimmed length loses ~19% volume.
+        model = model_with(
+            [((0, 0), (0, -4), .375), ((0, 0), (2.9375, 0), .375)],
+            symbols=(SymbolInstance("d1", "door", (1.46875, 0.), 2.9375, .375,
+                                    source_ids=("cad:d",), evidence="block", confidence=1.),),
+            openings=(Opening("o1", "door", 1, (0., 0.), (2.9375, 0.), 7.,
+                              symbol_id="d1", assumed_height=False),))
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name)/"lintel.ifc"
+        author_ifc(model, path)
+        report = validate_export(path, (model,))
+        self.assertTrue(report["passed"], report["errors"])
+
     def test_a_long_stem_does_not_notch_its_through_wall(self):
         # The stem's line is longer than the through wall's, so ranking walls
         # globally would let the stem outrank the wall it must stop at.

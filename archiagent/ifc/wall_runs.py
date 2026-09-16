@@ -16,6 +16,10 @@ from archiagent.primitives import Pt
 PARALLEL_TOL = 1e-7
 THICKNESS_TOL_FT = 1e-9
 POINT_TOL_FT = 1e-9
+# A joint's owner reaches (thickness/2)/sin(angle) past the junction, so walls
+# meeting at a hair's angle mitre kilometres away. Beyond this many multiples
+# of the wall's own thickness the joint is not expressible and is left alone.
+MAX_REACH_THICKNESSES = 20.0
 
 
 @dataclass(frozen=True)
@@ -121,6 +125,17 @@ def _line_rank(model, groups, eligible):
         keys[root] = (-thickness, -length, start, end)
     order = sorted(keys, key=lambda root: keys[root])
     return {root: position for position, root in enumerate(order)}
+
+
+def _joinable(model, runs, point, green, blue):
+    """Can IfcOpenShell express this joint, or would it run away to infinity?"""
+    (gx, gy) = _leaving(model.walls[runs[green].members[0]], point)
+    (bx, by) = _leaving(model.walls[runs[blue].members[0]], point)
+    sine = abs(gx*by - gy*bx)
+    if sine < PARALLEL_TOL:
+        return False  # parallel walls: IfcOpenShell ignores them outright
+    thickness = max(runs[green].thickness_ft, runs[blue].thickness_ft)
+    return (thickness/2) / sine <= thickness * MAX_REACH_THICKNESSES
 
 
 def _end_type(run, point):
@@ -305,19 +320,18 @@ def build_runs(model) -> RunLayout:
         if kind == "L":
             blue = min(involved, key=lambda index: rank[lines.find(runs[index].members[0])])
             green = next(index for index in involved if index != blue)
+            if not _joinable(model, runs, point, green, blue):
+                untrimmed.append(point)
+                continue
             proposed.append(RunConnection(green, blue, _end_type(runs[green], point),
                                           _end_type(runs[blue], point), point))
         else:
             blue = next(index for index in involved
                         if _end_type(runs[index], point) == "ATPATH")
-            (bx, by) = _leaving(model.walls[runs[blue].members[0]], point)
             for green in involved:
                 if green == blue:
                     continue
-                (gx, gy) = _leaving(model.walls[runs[green].members[0]], point)
-                if abs(gx*by - gy*bx) < PARALLEL_TOL:
-                    # A wall running along the one it meets cannot stop against
-                    # it, and IfcOpenShell ignores parallel walls outright.
+                if not _joinable(model, runs, point, green, blue):
                     untrimmed.append(point)
                     continue
                 proposed.append(RunConnection(green, blue, _end_type(runs[green], point),

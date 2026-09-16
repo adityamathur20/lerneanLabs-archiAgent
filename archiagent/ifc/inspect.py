@@ -98,6 +98,12 @@ def _expectations(models):
             length = wall_run.length_ft
             ux = (wall_run.end[0]-wall_run.start[0])/length
             uy = (wall_run.end[1]-wall_run.start[1])/length
+            # The run is trimmed where it stops against another wall, so a void
+            # reaching past the trim removes material that is no longer there.
+            shape = shapes[index]
+            spans = [(p[0]-wall_run.start[0])*ux+(p[1]-wall_run.start[1])*uy
+                     for p in shape.exterior.coords] if not shape.is_empty else [0.0, length]
+            lo, hi = max(0.0, min(spans)), min(length, max(spans))
             cuts = []
             for op in model.openings:
                 if op.host_wall_index not in wall_run.members:
@@ -106,15 +112,16 @@ def _expectations(models):
                              for p in (op.start,op.end))
                 # A void flush with the host ends within model tolerance cuts
                 # through them; projection residue must not survive as a sliver.
-                a = 0.0 if a <= GEOMETRY_EPS_FT else a
-                b = length if b >= length-GEOMETRY_EPS_FT else b
-                cuts.append(box(a, op.sill_ft, b, op.sill_ft+op.height_ft))
-            section = box(0,0,length,model.wall_height_ft).difference(unary_union(cuts))
+                a = lo if a <= lo+GEOMETRY_EPS_FT else a
+                b = hi if b >= hi-GEOMETRY_EPS_FT else b
+                a, b = max(a, lo), min(b, hi)
+                if b > a:
+                    cuts.append(box(a, op.sill_ft, b, op.sill_ft+op.height_ft))
+            section = box(lo,0,hi,model.wall_height_ft).difference(unary_union(cuts))
             if section.is_empty:
                 raise ValueError(f"wall run {wall_run.id} has no material after opening subtraction")
             _,zlo,_,zhi = section.bounds
-            shape = shapes[index]
-            void_area = box(0,0,length,model.wall_height_ft).area - section.area
+            void_area = box(lo,0,hi,model.wall_height_ft).area - section.area
             x0,y0,x1,y1 = shape.bounds
             add("IfcWall", wall_run.id, model,
                 shape.area*model.wall_height_ft - void_area*wall_run.thickness_ft,
