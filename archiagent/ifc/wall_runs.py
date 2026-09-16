@@ -131,6 +131,36 @@ def _end_type(run, point):
     return "ATPATH"
 
 
+def run_footprints(layout, model):
+    """Trimmed XY outline of every run, in feet, keyed by run index.
+
+    A run is its rectangle, extended at a corner it owns to the far face of the
+    wall stopping there, minus the rectangles of the walls it butts into.
+    """
+    from shapely.geometry import LineString
+
+    def rectangle(index, extra_start=0.0, extra_end=0.0):
+        wall_run = layout.runs[index]
+        ux = (wall_run.end[0]-wall_run.start[0]) / wall_run.length_ft
+        uy = (wall_run.end[1]-wall_run.start[1]) / wall_run.length_ft
+        start = (wall_run.start[0]-ux*extra_start, wall_run.start[1]-uy*extra_start)
+        end = (wall_run.end[0]+ux*extra_end, wall_run.end[1]+uy*extra_end)
+        return LineString((start, end)).buffer(wall_run.thickness_ft/2, cap_style=2)
+
+    extensions = {index: [0.0, 0.0] for index in range(len(layout.runs))}
+    for connection in layout.connections:
+        if connection.related_type == "ATPATH":
+            continue  # a T or X leaves the wall it passes through untouched
+        end = 0 if connection.related_type == "ATSTART" else 1
+        extensions[connection.related][end] = max(
+            extensions[connection.related][end], layout.runs[connection.relating].thickness_ft/2)
+    shapes = {index: rectangle(index, *extensions[index]) for index in range(len(layout.runs))}
+    for connection in layout.connections:
+        shapes[connection.relating] = shapes[connection.relating].difference(
+            shapes[connection.related])
+    return shapes
+
+
 def build_runs(model) -> RunLayout:
     _, _, profile_mapping = wall_layout(model)
     eligible = [i for i in range(len(model.walls)) if i not in profile_mapping]

@@ -20,6 +20,7 @@ from shapely.ops import unary_union
 
 from archiagent.ifc.author import FT, SLAB_THICKNESS_FT
 from archiagent.ifc.profile_layout import host_name, profile_material_slices, wall_layout
+from archiagent.ifc.wall_runs import build_runs, run_footprints
 from archiagent.validate import GEOMETRY_EPS_FT
 
 PHYSICAL_CLASSES = ("IfcWall", "IfcSlab", "IfcDoor", "IfcWindow", "IfcColumn", "IfcBeam")
@@ -85,16 +86,19 @@ def _expectations(models):
                       max(poly.bounds[2] for _, _, poly in slices),
                       max(poly.bounds[3] for _, _, poly in slices), z+max(hi for _, hi, _ in slices))
             add("IfcWall", f"WP:{profile.id}", model, volume, tuple(v*FT for v in bounds))
-        for i, wall in enumerate(model.walls):
-            if i in mapping:
-                continue
-            length = wall.length_ft
-            ux, uy = (wall.end[0]-wall.start[0])/length, (wall.end[1]-wall.start[1])/length
+        # Walls are authored as runs whose joints are trimmed, so the expected
+        # solid is the trimmed footprint, less the material its voids remove.
+        layout = build_runs(model)
+        shapes = run_footprints(layout, model)
+        for index, wall_run in enumerate(layout.runs):
+            length = wall_run.length_ft
+            ux = (wall_run.end[0]-wall_run.start[0])/length
+            uy = (wall_run.end[1]-wall_run.start[1])/length
             cuts = []
             for op in model.openings:
-                if op.host_wall_index != i:
+                if op.host_wall_index not in wall_run.members:
                     continue
-                a,b = sorted((p[0]-wall.start[0])*ux+(p[1]-wall.start[1])*uy
+                a,b = sorted((p[0]-wall_run.start[0])*ux+(p[1]-wall_run.start[1])*uy
                              for p in (op.start,op.end))
                 # A void flush with the host ends within model tolerance cuts
                 # through them; projection residue must not survive as a sliver.
@@ -103,12 +107,14 @@ def _expectations(models):
                 cuts.append(box(a, op.sill_ft, b, op.sill_ft+op.height_ft))
             section = box(0,0,length,model.wall_height_ft).difference(unary_union(cuts))
             if section.is_empty:
-                raise ValueError(f"wall {i} has no material after opening subtraction")
-            lo,zlo,hi,zhi = section.bounds
-            a = (wall.start[0]+lo*ux, wall.start[1]+lo*uy)
-            b = (wall.start[0]+hi*ux, wall.start[1]+hi*uy)
-            add("IfcWall",f"W{i:03d}",model,section.area*wall.thickness_ft,
-                _bounds(_run_corners(a,b,wall.thickness_ft),z+zlo,z+zhi))
+                raise ValueError(f"wall run {wall_run.id} has no material after opening subtraction")
+            _,zlo,_,zhi = section.bounds
+            shape = shapes[index]
+            void_area = box(0,0,length,model.wall_height_ft).area - section.area
+            x0,y0,x1,y1 = shape.bounds
+            add("IfcWall", wall_run.id, model,
+                shape.area*model.wall_height_ft - void_area*wall_run.thickness_ft,
+                (x0*FT, y0*FT, (z+zlo)*FT, x1*FT, y1*FT, (z+zhi)*FT))
         for i, footprint in enumerate(model.footprints):
             area = Polygon(footprint.boundary, footprint.holes).area
             add("IfcSlab",f"Floor{i:03d}",model,area*SLAB_THICKNESS_FT,

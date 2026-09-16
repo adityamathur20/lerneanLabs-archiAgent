@@ -68,5 +68,16 @@ class ExportValidationChecks(unittest.TestCase):
                             for e in report["errors"]))
 
 
+    def test_joined_walls_pass_reopened_validation(self):
+        from checks.test_wall_joins_fixtures import model_with
+
+        model = model_with([((0, 0), (5, 0), .5), ((5, 0), (5, -4), .75)])
+        path = Path(self.directory.name)/"joined.ifc"
+        author_ifc(model, path)
+        report = validate_export(path, (model,))
+        self.assertTrue(report["passed"], report["errors"])
+        self.assertEqual(report["counts"]["IfcWall"], {"expected": 2, "actual": 2})
+
+
 if __name__=="__main__":
     unittest.main()

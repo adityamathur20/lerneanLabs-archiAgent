@@ -15,7 +15,6 @@ from archiagent.ifc.inspect import _expectations, _scope
 from archiagent.primitives import Primitive, PrimitiveSet
 from archiagent.recognition import _spans_overlap, recognize_symbols
 from checks.test_geometry_semantic import wall
-from checks.test_semantic_pipeline import build
 
 
 class DegenerateExportGeometryChecks(unittest.TestCase):
@@ -32,16 +31,22 @@ class DegenerateExportGeometryChecks(unittest.TestCase):
         self.assertEqual(graph.unresolved, ((0, 0), (3, -5), (8, 1e-7)))
 
     def test_door_filling_its_whole_host_keeps_only_the_lintel(self):
-        model = build()
-        door = model.openings[0]
-        host = model.walls[door.host_wall_index]
-        self.assertEqual((door.start, door.end), (host.start, host.end))
-        # Projection noise on a real drawing: the void reaches the host ends
-        # to within 1e-12ft, which must not leave a full-height sliver.
-        noisy = replace(door, start=(door.start[0]+1e-12, door.start[1]),
-                        end=(door.end[0]-1e-12, door.end[1]))
-        expected, _, _ = _expectations((replace(model, openings=(noisy,)),))
-        bounds = expected[("IfcWall", f"W{door.host_wall_index:03d}", _scope(model))]["bounds_m"]
+        from archiagent.semantic import Opening, SymbolInstance
+        from checks.test_wall_joins_fixtures import model_with
+
+        # A doorway host with no collinear neighbour is one run exactly as wide
+        # as its door. Projection noise on a real drawing leaves the void short
+        # of the host ends by 1e-12ft, which must not survive as a full-height
+        # sliver: only the lintel above the door remains.
+        door = Opening("o1", "door", 0, (1e-12, 0.), (5.-1e-12, 0.), 7.,
+                       symbol_id="d1", assumed_height=False)
+        model = model_with(
+            [((0, 0), (5, 0), .5)],
+            symbols=(SymbolInstance("d1", "door", (2.5, 0.), 5., .5, source_ids=("cad:d",),
+                                    evidence="block", confidence=1.),),
+            openings=(door,))
+        expected, _, _ = _expectations((model,))
+        bounds = expected[("IfcWall", "W000", _scope(model))]["bounds_m"]
         self.assertAlmostEqual(bounds[2], 7*.3048, places=9)
 
     def test_single_line_on_beam_layer_is_not_a_structural_solid(self):
