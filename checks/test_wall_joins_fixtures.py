@@ -28,3 +28,28 @@ def model_with(segments, wall_height_ft=10., **kwargs):
 def spans(layout):
     """Each run as (start, end, thickness), sorted, for order-independent asserts."""
     return sorted((r.start, r.end, r.thickness_ft) for r in layout.runs)
+
+
+def footprint(wall):
+    """World-coordinate XY outline of a wall's Body, in feet."""
+    import ifcopenshell.util.placement as placement
+    import numpy
+    from shapely.geometry import Polygon
+
+    matrix = placement.get_local_placement(wall.ObjectPlacement)
+    body = next(r for r in wall.Representation.Representations
+                if r.RepresentationIdentifier == "Body")
+    item = body.Items[0]
+    while item.is_a("IfcBooleanResult"):
+        item = item.FirstOperand
+    profile = item.SweptArea
+    if profile.is_a("IfcRectangleProfileDef"):
+        x, y = profile.Position.Location.Coordinates if profile.Position else (0., 0.)
+        points = [(x-profile.XDim/2, y-profile.YDim/2), (x+profile.XDim/2, y-profile.YDim/2),
+                  (x+profile.XDim/2, y+profile.YDim/2), (x-profile.XDim/2, y+profile.YDim/2)]
+    else:
+        curve = profile.OuterCurve
+        points = (list(curve.Points.CoordList) if curve.is_a("IfcIndexedPolyCurve")
+                  else [p.Coordinates for p in curve.Points])
+    world = [(matrix @ numpy.array([p[0], p[1], 0., 1.]))[:2] / .3048 for p in points]
+    return Polygon(world)

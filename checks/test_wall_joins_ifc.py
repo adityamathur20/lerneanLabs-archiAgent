@@ -5,9 +5,11 @@ from pathlib import Path
 
 import ifcopenshell
 import ifcopenshell.util.element
+from shapely.geometry import box
+from shapely.ops import unary_union
 
 from archiagent.ifc.author import author_ifc
-from checks.test_wall_joins_fixtures import model_with
+from checks.test_wall_joins_fixtures import footprint, model_with
 
 FT = .3048
 
@@ -68,6 +70,36 @@ class WallJoinAuthoringChecks(unittest.TestCase):
             assign_stable_ids(f, (model,))
             ids.append(product.GlobalId)
         self.assertEqual(ids[0], ids[1])
+
+
+class WallJointGeometryChecks(unittest.TestCase):
+    """The reviewed sketch: one wall owns the intersection, nothing overlaps."""
+
+    def assert_matches_sketch(self, f, expected):
+        shapes = [footprint(w) for w in f.by_type("IfcWall")]
+        overlap = sum(a.intersection(b).area for i, a in enumerate(shapes) for b in shapes[i+1:])
+        self.assertLess(overlap, 1e-9, "walls must not overlap")
+        self.assertLess(unary_union(shapes).symmetric_difference(expected).area, 1e-9)
+
+    def test_l_corner_is_butted_with_the_thicker_wall_owning_it(self):
+        f, directory = author([((0, 0), (5, 0), .5), ((5, 0), (5, -4), .75)])
+        self.addCleanup(directory.cleanup)
+        self.assert_matches_sketch(f, unary_union([
+            box(0, -.25, 5-.375, .25), box(5-.375, -4, 5+.375, .25)]))
+
+    def test_t_stem_stops_at_the_through_wall_face(self):
+        f, directory = author([((0, 0), (5, 0), .75), ((5, 0), (10, 0), .75),
+                               ((5, 0), (5, -4), .5)])
+        self.addCleanup(directory.cleanup)
+        self.assert_matches_sketch(f, unary_union([
+            box(0, -.375, 10, .375), box(5-.25, -4, 5+.25, -.375)]))
+
+    def test_x_splits_the_thinner_wall_around_the_thicker_one(self):
+        f, directory = author([((0, 0), (5, 0), .75), ((5, 0), (10, 0), .75),
+                               ((5, -4), (5, 0), .5), ((5, 0), (5, 4), .5)])
+        self.addCleanup(directory.cleanup)
+        self.assert_matches_sketch(f, unary_union([
+            box(0, -.375, 10, .375), box(5-.25, -4, 5+.25, -.375), box(5-.25, .375, 5+.25, 4)]))
 
 
 if __name__ == "__main__":

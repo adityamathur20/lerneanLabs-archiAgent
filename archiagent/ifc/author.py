@@ -5,7 +5,6 @@ relationship but do not trim physical overlaps. No storey heights are inferred.
 """
 from __future__ import annotations
 
-import itertools
 import json
 import math
 from dataclasses import asdict
@@ -22,7 +21,6 @@ import ifcopenshell.api.pset
 import ifcopenshell.api.root
 import ifcopenshell.api.spatial
 import ifcopenshell.api.unit
-import ifcopenshell.guid
 import ifcopenshell.util.element
 import ifcopenshell.util.shape_builder
 
@@ -256,27 +254,27 @@ def _author_plan(f, body, axis, building, model, presentation, layer_sets):
         for i in wall_run.members:
             wall_entities[i] = wall
 
-    def connection_type(index, point):
-        w = model.walls[index]
-        return ("ATSTART" if math.dist(point, w.start) < 1e-6 else
-                "ATEND" if math.dist(point, w.end) < 1e-6 else "ATPATH")
+    # One connection per wall end: connect_path drops an existing connection at
+    # an end it reuses, which is why a through wall is authored as one run.
+    relationships = []
+    for connection in layout.connections:
+        relating = wall_entities[layout.runs[connection.relating].members[0]]
+        related = wall_entities[layout.runs[connection.related].members[0]]
+        relationships.append((connection, run(
+            "geometry.connect_path", f, relating_element=relating, related_element=related,
+            relating_connection=connection.relating_type,
+            related_connection=connection.related_type)))
 
-    connections = set()
-    for junction in model.junctions:
-        indices = [i for i in junction.wall_indices if i in wall_entities]
-        for a, b in itertools.combinations(indices, 2):
-            if wall_entities[a] == wall_entities[b]:
-                continue
-            key = tuple(sorted(((wall_entities[a].id(), connection_type(a, junction.point)),
-                                (wall_entities[b].id(), connection_type(b, junction.point)))))
-            if key in connections:
-                continue
-            connections.add(key)
-            f.create_entity("IfcRelConnectsPathElements", GlobalId=ifcopenshell.guid.new(),
-                            RelatingElement=wall_entities[a], RelatedElement=wall_entities[b],
-                            RelatingPriorities=[], RelatedPriorities=[],
-                            RelatingConnectionType=connection_type(a, junction.point),
-                            RelatedConnectionType=connection_type(b, junction.point))
+    # Regeneration rebuilds a connected wall's body from its axis, layer set and
+    # connections; that is what trims the joint. It replaces the styled item.
+    joined = {index for connection in layout.connections
+              for index in (connection.relating, connection.related)}
+    for index in sorted(joined):
+        wall = wall_entities[layout.runs[index].members[0]]
+        run("geometry.regenerate_wall_representation", f, wall=wall)
+        regenerated = next(r for r in wall.Representation.Representations
+                           if r.RepresentationIdentifier == "Body")
+        presentation.assign("IfcWall", regenerated.Items[0])
 
     for op in model.openings:
         host = model.walls[op.host_wall_index]
