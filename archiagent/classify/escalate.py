@@ -10,10 +10,9 @@ from archiagent.classify.inventory import LayerStats
 from archiagent.classify.layers import Classification, WALL_ROLES
 from archiagent.classify.roles import Role
 
-# Measured on Floor Plan.dxf (39 layers): a cap of 6 dropped 17 candidates,
-# including WALLS and RCC WALL -- real wall layers left unexamined. 20 covers
-# that drawing. Each escalated layer costs one rendered image in the vision
-# call, so this is a cost/coverage dial, not a correctness one.
+# Each escalated layer costs one rendered image in the vision call. This
+# configurable cap controls cost and coverage; it is not a correctness gate.
+# Candidates beyond the cap remain unresolved by vision, rather than verified.
 ESCALATION_CAP = 20
 CONFIDENCE_FLOOR = 0.70
 SHARE_FLOOR = 0.10

@@ -1,9 +1,9 @@
 """DXF layer features: everything the DXF layer table and entity types know
 that a PrimitiveSet cannot express.
 
-ARC counts identify doors; MTEXT counts identify text layers; lineweight
-separates walls (35-40) from furniture (9) and windows (5). None of this
-survives into PrimitiveSet, so it is gathered here from the DXF directly.
+Entity counts and layer plotting properties are candidate evidence, not
+architectural classes: arcs and heavy linework have several interpretations.
+These DXF-specific fields supplement the vector inventory for classification.
 """
 
 from __future__ import annotations

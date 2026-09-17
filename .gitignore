@@ -3,6 +3,12 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+.test-tmp/
+.test-tmp-*/
+.cache/
+*.report.json
+*.overlay.svg
+*.review.html
 *.egg-info/
 
 # Client drawings — NEVER commit (see PLAN.md, this repo is public)
@@ -13,6 +19,10 @@ input-floorplans/
 
 # Generated models and renders — derived from client drawings, NEVER commit
 *.ifc
+*.interpretation.json
+*.blender/
+*.blend
+*.blend[0-9]
 .archiagent-cache/
 
 # graphify knowledge-graph output (regenerable, ~1MB)

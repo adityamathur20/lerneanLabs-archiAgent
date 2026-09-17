@@ -24,6 +24,7 @@ class WallSeg:
     source_layer: str
     detector: str  # "paired-line" | "hatch-body"
     thickness_source: str  # "measured" | "default"
+    source_ids: tuple[str, ...] = ()
 
     @property
     def length_ft(self) -> float:
@@ -34,59 +35,60 @@ class WallSeg:
         return abs(self.end[1] - self.start[1]) < abs(self.end[0] - self.start[0])
 
 
-def _pair_family(family: list[tuple[float, float, float, str]],
-                 min_t_ft: float, max_t_ft: float,
-                 min_len_ft: float) -> list[tuple[float, float, float, float, str]]:
-    """Pair (lo, hi, offset, layer) entries into (lo, hi, center, thickness, layer).
+def _validate_pairing(units_per_foot, min_t_in, max_t_in, min_len_ft):
+    if not all(math.isfinite(v) and v > 0 for v in
+               (units_per_foot, min_t_in, max_t_in, min_len_ft)):
+        raise ValueError("scale, thickness and minimum length must be finite and positive")
+    if max_t_in < min_t_in:
+        raise ValueError("max_t_in must be at least min_t_in")
 
-    `offset` is the perpendicular coordinate; `lo`/`hi` bound the run along
-    the parallel axis.
+
+def _interval_pairs(family, min_t_ft, max_t_ft, min_len_ft):
+    """Sweep face endpoints; only consume the overlapping interval of a face.
+
+    Each entry is (lo, hi, offset, source_ids). Tiny numerical differences
+    are normalized, never drafting gaps. Collinear fragments can therefore
+    support one wall without consuming the unused span of a long face.
     """
-    order = sorted(range(len(family)), key=lambda i: family[i][2])
-    used: set[int] = set()
-    out: list[tuple[float, float, float, float, str]] = []
-
-    for pos, i in enumerate(order):
-        if i in used:
+    cuts = sorted({round(v, 9) for f in family for v in f[:2]})
+    runs = {}
+    for lo, hi in zip(cuts, cuts[1:]):
+        if hi - lo < 1e-9:
             continue
-        a_lo, a_hi, a_off, a_layer = family[i]
-        best = None
-        for j in order[pos + 1:]:
-            if j in used:
+        mid = (lo + hi) / 2
+        active = {}
+        for a, b, off, ids in family:
+            if a - 1e-9 <= mid <= b + 1e-9:
+                active.setdefault(round(off, 9), set()).update(ids)
+        offsets = sorted(active)
+        candidates = sorted((b - a, a, b) for i, a in enumerate(offsets)
+                            for b in offsets[i + 1:]
+                            if min_t_ft - 1e-9 <= b - a <= max_t_ft + 1e-9)
+        used = set()
+        for thickness, a, b in candidates:
+            if a in used or b in used:
                 continue
-            b_lo, b_hi, b_off, b_layer = family[j]
-            if b_layer != a_layer:
-                # A wall is built from ONE layer's own geometry. Pairing
-                # across layers invents walls that exist on neither: on
-                # PLAN.dxf it paired stair lines with wall lines, so a layer
-                # named sSTAIR yielded 5 walls when its own geometry yields
-                # 2. It also makes layer classification meaningless -- you
-                # could classify every layer correctly and still get stair
-                # walls, because the pairing reaches across into layers you
-                # never approved.
-                continue
-            thickness = abs(b_off - a_off)
-            if thickness > max_t_ft:
-                break  # sorted by offset, so no later j can be farther
-            if thickness < min_t_ft:
-                continue
-            overlap = min(a_hi, b_hi) - max(a_lo, b_lo)
-            if overlap < min_len_ft:
-                continue
-            if overlap < thickness:
-                # A wall is never thicker than it is long. Two short stubs
-                # a couple of feet apart are unrelated geometry, not a wall.
-                continue
-            # nearest offset wins; overlap only breaks ties
-            key = (thickness, -overlap)
-            if best is None or key < best[0]:
-                best = (key, j, thickness,
-                        max(a_lo, b_lo), min(a_hi, b_hi), (a_off + b_off) / 2.0)
-        if best is not None:
-            key, j, thickness, lo, hi, center = best
-            used.add(i)
-            used.add(j)
-            out.append((lo, hi, center, thickness, a_layer))
+            used.update((a, b))
+            ids = active[a] | active[b]
+            segments = runs.setdefault((a, b), [])
+            if segments and abs(segments[-1][1] - lo) < 1e-8:
+                segments[-1][1] = hi
+                segments[-1][2].update(ids)
+            else:
+                segments.append([lo, hi, set(ids)])
+    for (a, b), segments in sorted(runs.items()):
+        for lo, hi, ids in segments:
+            if hi - lo + 1e-9 >= max(min_len_ft, b - a):
+                yield lo, hi, (a + b) / 2, b - a, tuple(sorted(ids))
+
+
+def _pair_family(family, min_t_ft, max_t_ft, min_len_ft):
+    """Compatibility wrapper for axis-family callers."""
+    out = []
+    for layer in sorted({f[3] for f in family}):
+        entries = [(a, b, off, ()) for a, b, off, lyr in family if lyr == layer]
+        out.extend((a, b, c, t, layer)
+                   for a, b, c, t, _ in _interval_pairs(entries, min_t_ft, max_t_ft, min_len_ft))
     return out
 
 
@@ -94,51 +96,144 @@ def detect_walls_paired_lines(ps: PrimitiveSet, wall_layers: set[str],
                               units_per_foot: float,
                               min_t_in: float = 2.0, max_t_in: float = 24.0,
                               min_len_ft: float = 1.0) -> tuple[WallSeg, ...]:
-    if units_per_foot <= 0:
-        raise ValueError("units_per_foot must be positive")
+    """Reconstruct straight wall faces in their local frame, at any angle.
 
-    horizontal: list[tuple[float, float, float, str]] = []
-    vertical: list[tuple[float, float, float, str]] = []
-
+    Pairing is layer-local and requires parallel source evidence. It does
+    not infer missing faces or reinterpret curved polylines as straight walls.
+    """
+    _validate_pairing(units_per_foot, min_t_in, max_t_in, min_len_ft)
+    segments = []
     for p in ps.by_layer(wall_layers):
-        for (x0, y0), (x1, y1) in p.segments():
-            fx0, fy0 = x0 / units_per_foot, y0 / units_per_foot
-            fx1, fy1 = x1 / units_per_foot, y1 / units_per_foot
-            if abs(fy1 - fy0) < AXIS_TOL_FT and abs(fx1 - fx0) >= min_len_ft:
-                horizontal.append((min(fx0, fx1), max(fx0, fx1),
-                                   (fy0 + fy1) / 2.0, p.layer))
-            elif abs(fx1 - fx0) < AXIS_TOL_FT and abs(fy1 - fy0) >= min_len_ft:
-                vertical.append((min(fy0, fy1), max(fy0, fy1),
-                                 (fx0 + fx1) / 2.0, p.layer))
+        if p.kind in {"curve", "fill"}:
+            continue  # curved/filled bodies need their own source-aware detector
+        for raw_a, raw_b in p.segments():
+            a = tuple(v / units_per_foot for v in raw_a)
+            b = tuple(v / units_per_foot for v in raw_b)
+            length = math.dist(a, b)
+            if length < 1e-9:
+                continue
+            if b < a:
+                a, b = b, a
+            ux, uy = (b[0] - a[0]) / length, (b[1] - a[1]) / length
+            source = getattr(p, "source_id", "")
+            segments.append((p.layer, ux, uy, a, b, (source,) if source else ()))
+    families = []
+    for layer, ux, uy, a, b, ids in sorted(segments):
+        family = next((g for g in families
+                       if g[0] == layer and abs(g[1] * uy - g[2] * ux) < 1e-7), None)
+        if family is None:
+            family = [layer, ux, uy, []]
+            families.append(family)
+        _, dx, dy, entries = family
+        lo, hi = sorted((a[0] * dx + a[1] * dy, b[0] * dx + b[1] * dy))
+        off = ((a[1] + b[1]) * dx - (a[0] + b[0]) * dy) / 2
+        entries.append((lo, hi, off, ids))
+    walls = []
+    for layer, dx, dy, entries in families:
+        for lo, hi, off, thickness, ids in _interval_pairs(
+                entries, min_t_in / 12, max_t_in / 12, min_len_ft):
+            a = (round(lo * dx - off * dy, 9), round(lo * dy + off * dx, 9))
+            b = (round(hi * dx - off * dy, 9), round(hi * dy + off * dx, 9))
+            walls.append(WallSeg(min(a, b), max(a, b), thickness, layer,
+                                 "paired-line", "measured", ids))
+    return tuple(sorted(walls, key=lambda w: (w.start, w.end, w.source_layer, w.thickness_ft)))
 
-    min_t_ft, max_t_ft = min_t_in / 12.0, max_t_in / 12.0
-    walls: list[WallSeg] = []
 
-    for lo, hi, center, thickness, layer in _pair_family(
-            horizontal, min_t_ft, max_t_ft, min_len_ft):
-        walls.append(WallSeg((lo, center), (hi, center), thickness,
-                             layer, "paired-line", "measured"))
+def combine_wall_hypotheses(*groups: tuple[WallSeg, ...]) -> tuple[WallSeg, ...]:
+    """Merge duplicate/overlapping collinear hypotheses without filling gaps.
 
-    for lo, hi, center, thickness, layer in _pair_family(
-            vertical, min_t_ft, max_t_ft, min_len_ft):
-        walls.append(WallSeg((center, lo), (center, hi), thickness,
-                             layer, "paired-line", "measured"))
-
-    # Two runs of the same geometry can pair identically (and the same geometry
-    # can appear on more than one layer). Duplicates inflate junction degree and
-    # misclassify corners -- a duplicated L reads as an X -- and would emit
-    # duplicate IfcWall entities downstream.
-    seen: set = set()
-    unique: list[WallSeg] = []
-    for w in walls:
-        a = (round(w.start[0], 4), round(w.start[1], 4))
-        b = (round(w.end[0], 4), round(w.end[1], 4))
-        key = (min(a, b), max(a, b), round(w.thickness_ft, 4))
-        if key in seen:
+    Only equal-thickness, equal-layer centerlines can be combined. Provenance
+    is unioned; competing thicknesses remain explicit competing hypotheses.
+    """
+    families = []
+    for w in sorted((w for group in groups for w in group),
+                    key=lambda w: (min(w.start, w.end), max(w.start, w.end),
+                                   w.source_layer, w.thickness_ft, w.detector, w.source_ids)):
+        if w.length_ft <= 1e-9:
             continue
-        seen.add(key)
-        unique.append(w)
-    return tuple(unique)
+        a, b = sorted((w.start, w.end))
+        dx, dy = (b[0]-a[0])/w.length_ft, (b[1]-a[1])/w.length_ft
+        family = next((g for g in families
+                       if g[0].source_layer == w.source_layer
+                       and abs(g[0].thickness_ft-w.thickness_ft) < 1e-7
+                       and abs(g[1]*dy-g[2]*dx) < 1e-7
+                       and abs(a[1]*g[1]-a[0]*g[2]-g[3]) < 1e-7), None)
+        if family is None:
+            family = [w, dx, dy, a[1]*dx-a[0]*dy, []]
+            families.append(family)
+        _, dx, dy, _, intervals = family
+        lo, hi = sorted((a[0]*dx+a[1]*dy, b[0]*dx+b[1]*dy))
+        intervals.append((lo, hi, w))
+    out = []
+    for template, dx, dy, off, intervals in families:
+        runs = []
+        for lo, hi, w in sorted(intervals, key=lambda v: (v[0], v[1], v[2].detector, v[2].source_ids)):
+            if runs and lo <= runs[-1][1] + 1e-9:
+                runs[-1][1] = max(runs[-1][1], hi)
+                runs[-1][2].update(w.source_ids)
+                runs[-1][3].add(w.detector)
+            else:
+                runs.append([lo, hi, set(w.source_ids), {w.detector}])
+        for lo, hi, ids, detectors in runs:
+            a = (round(lo*dx-off*dy, 9), round(lo*dy+off*dx, 9))
+            b = (round(hi*dx-off*dy, 9), round(hi*dy+off*dx, 9))
+            out.append(WallSeg(min(a, b), max(a, b), template.thickness_ft,
+                               template.source_layer,
+                               next(iter(detectors)) if len(detectors) == 1 else "combined-evidence",
+                               template.thickness_source, tuple(sorted(ids))))
+    return tuple(sorted(out, key=lambda w: (w.start, w.end, w.source_layer, w.thickness_ft)))
+
+
+def detect_walls_filled_bodies(ps: PrimitiveSet, wall_layers: set[str],
+                               units_per_foot: float,
+                               min_t_in: float = 2.0, max_t_in: float = 24.0,
+                               min_len_ft: float = 1.0) -> tuple[WallSeg, ...]:
+    """Accept thin rectangular filled bodies, rejecting holes/complex outlines.
+
+    Rectangle coverage must be within one part per million. This deliberately
+    excludes L-shaped networks and curved bodies requiring polygonal walls;
+    it never approximates them with one bounding rectangle.
+    """
+    from shapely.geometry import Polygon
+
+    _validate_pairing(units_per_foot, min_t_in, max_t_in, min_len_ft)
+    entities = {e.id: e for e in getattr(ps, "entities", ())}
+    candidates = []
+    for p in ps.by_layer(wall_layers):
+        if p.kind != "fill":
+            continue
+        entity = entities.get(getattr(p, "source_id", ""))
+        if entity is not None and entity.holes:
+            continue
+        candidates.append((p.coords, p.layer, getattr(p, "source_id", "")))
+    wanted = {layer.casefold() for layer in wall_layers}
+    for e in entities.values():
+        if e.kind in {"HATCH", "SOLID", "TRACE", "PDF_FILL"} and e.closed and not e.holes and e.layer.casefold() in wanted:
+            candidates.append((e.coords, e.layer, e.id))
+    out = []
+    for coords, layer, source_id in candidates:
+        if len(coords) < 3:
+            continue
+        poly = Polygon([(x/units_per_foot, y/units_per_foot) for x, y in coords])
+        if not poly.is_valid or poly.area <= 1e-12:
+            continue
+        rectangle = poly.minimum_rotated_rectangle
+        if rectangle.area <= 0 or abs(poly.area/rectangle.area-1) > 1e-6:
+            continue
+        corners = list(rectangle.exterior.coords)[:4]
+        edges = [(math.dist(a,b), a,b) for a,b in zip(corners, corners[1:]+corners[:1])]
+        thickness = min(edge[0] for edge in edges)
+        length = max(edge[0] for edge in edges)
+        if not (min_t_in/12-1e-9 <= thickness <= max_t_in/12+1e-9 and length >= max(min_len_ft, thickness)):
+            continue
+        short_edges = sorted(edges, key=lambda edge: edge[0])[:2]
+        endpoints = sorted(((a[0]+b[0])/2, (a[1]+b[1])/2) for _,a,b in short_edges)
+        # Equal-sided polygons have no supported principal wall axis.
+        if abs(length-thickness) < 1e-9:
+            continue
+        out.append(WallSeg(endpoints[0], endpoints[1], thickness, layer,
+                           "hatch-body", "measured", (source_id,) if source_id else ()))
+    return combine_wall_hypotheses(tuple(out))
 
 
 # Stair treads and hatch strokes are runs of evenly-spaced parallel lines.

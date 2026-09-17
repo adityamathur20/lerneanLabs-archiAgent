@@ -1,5 +1,10 @@
 # 2D Floorplan → 3D BIM Pipeline — Design & Plan
 
+> Historical design. The current semantic reconstruction implementation,
+> acceptance behavior and remaining limitations are documented in
+> [SEMANTIC_PIPELINE.md](SEMANTIC_PIPELINE.md). In particular, a draft export
+> does not establish dimensional or semantic acceptance.
+
 **Project:** lerneanLabs-archiAgent
 **Date:** 2026-08-21
 **Status:** Phase 1 design approved. Vertical slice proven end-to-end (§4).
