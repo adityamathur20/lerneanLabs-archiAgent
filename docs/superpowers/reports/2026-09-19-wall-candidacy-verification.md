@@ -1,6 +1,9 @@
 # Wall candidacy — verification record
 
-Drawing: MR RAJEEV JI TWANI JI.dxf (3 plans), `--units-per-foot 12`.
+Drawing: MR RAJEEV JI TWANI JI.dxf (3 plans), `units_per_foot=12.0`. No CLI run
+was made for this measurement — see "Measurement method" below: it is the
+offline replay of the analysed run's 27 layer decisions via
+`load_dxf`/`extract_from_dxf`/`evaluate_reference` directly.
 Reference: 12 envelope walls drafted from the drawing's own geometry by the assistant
 (reviewer role `assistant`; not user-confirmed). Corrections made by hand: yes, two —
 see "Corrections to the draft script" below.
@@ -61,23 +64,20 @@ resulting reference JSON, and that JSON lives outside the repo):
    (`column`, `PROJECTION`, hatch, dimension helpers, etc.) stops the
    min/max search from matching a wall face against an unrelated line.
 
-With both corrections, the script produced exactly the expected result:
+With both corrections, the script produced exactly the expected result: 12
+envelope walls across 3 plans, 4 per plan (`h-lo`, `h-hi`, `v-lo`, `v-hi` —
+the low/high-offset wall on each axis), **every one exactly 9.0 in thick**:
 
-```
-12 envelope walls in 3 plans
-plan1-h-lo [30689.38, -3340.14] [30728.63, -3340.14] 9.0 in
-plan1-h-hi [30670.13, -3275.89] [30728.63, -3275.89] 9.0 in
-plan1-v-lo [30669.75, -3340.52] [30669.75, -3276.27] 9.0 in
-plan1-v-hi [30729.0, -3340.52] [30729.0, -3318.52] 9.0 in
-plan2-h-lo [30774.71, -3340.14] [30813.96, -3340.14] 9.0 in
-plan2-h-hi [30755.46, -3275.89] [30813.96, -3275.89] 9.0 in
-plan2-v-lo [30755.08, -3340.52] [30755.08, -3276.27] 9.0 in
-plan2-v-hi [30814.33, -3304.02] [30814.33, -3275.52] 9.0 in
-plan3-h-lo [30845.2, -3340.14] [30884.45, -3340.14] 9.0 in
-plan3-h-hi [30825.95, -3275.89] [30884.45, -3275.89] 9.0 in
-plan3-v-lo [30825.57, -3340.52] [30825.57, -3276.27] 9.0 in
-plan3-v-hi [30884.82, -3304.02] [30884.82, -3276.27] 9.0 in
-```
+| plan | wall IDs | count | thickness |
+|---|---|---|---|
+| plan1 | `plan1-h-lo`, `plan1-h-hi`, `plan1-v-lo`, `plan1-v-hi` | 4 | 9.0 in |
+| plan2 | `plan2-h-lo`, `plan2-h-hi`, `plan2-v-lo`, `plan2-v-hi` | 4 | 9.0 in |
+| plan3 | `plan3-h-lo`, `plan3-h-hi`, `plan3-v-lo`, `plan3-v-hi` | 4 | 9.0 in |
+
+Client wall coordinates (start/end points, model-foot positions) are not
+reproduced here; they live only in the reference JSON itself, outside the
+repo, beside the drawing:
+`../input-floorplans/dxf/Jiju_dxf/MR RAJEEV JI TWANI JI.walls.reference.json`.
 
 12 walls, 3 plans, every thickness exactly 9.0 in. Reference JSON:
 `schema_version: 1`, `region_id: "whole-drawing"`, `reviewer: {"id":
