@@ -148,6 +148,65 @@ def test_load_reference_binds_source_window_and_region(tmp_path):
         evaluate_reference(replace(model(), source_sha256="b"*64), loaded)
 
 
+from archiagent.geometry.walls import WallSeg
+
+
+def wall_model(*walls):
+    return BuildingModel(tuple(walls), (), (), (), ScaleResult(1., "associated", (), 0., 0), (),
+                         "drawing.dxf", SHA, region_id="selected-plan")
+
+
+def seg(a, b, t=.75, layer="WALL"):
+    return WallSeg(a, b, t, layer, "paired-line", "measured", ())
+
+
+def ref_wall(wid, start, end, **extra):
+    return {"id": wid, "start": list(start), "end": list(end), "status": "reviewed", **extra}
+
+
+def wall_scope(bounds):
+    return scope("walls", ["wall"], bounds)
+
+
+def test_walls_are_not_evaluated_without_a_reviewed_wall_scope():
+    result = evaluate_reference(wall_model(seg((0, 0), (10, 0))),
+                                reference([], walls=[ref_wall("w1", (0, 0), (10, 0))]))
+    assert result["walls"]["evaluated"] is False
+
+
+def test_wall_recall_and_precision_are_length_based_inside_complete_scopes():
+    predicted = wall_model(seg((0, 0), (5, 0)), seg((0, 5), (0, 9)))
+    result = evaluate_reference(predicted, reference(
+        [], walls=[ref_wall("w1", (0, 0), (12, 0))], scopes=[wall_scope([-1, -1, 20, 20])]))
+    walls = result["walls"]
+    assert walls["evaluated"] is True
+    assert walls["recall_length"] == pytest.approx(5 / 12)
+    assert walls["precision_length"] == pytest.approx(5 / 9)
+    assert walls["uncovered_reference_ids"] == ["w1"]
+    assert walls["unsupported_predicted"] == [{"start": [0, 5], "end": [0, 9], "source_layer": "WALL"}]
+
+
+def test_offset_and_angle_limits_decide_whether_a_prediction_covers_a_reference():
+    ref = reference([], walls=[ref_wall("w1", (0, 0), (10, 0))], scopes=[wall_scope([-1, -2, 12, 12])])
+    near = evaluate_reference(wall_model(seg((0, .4), (10, .4))), ref)["walls"]
+    far = evaluate_reference(wall_model(seg((0, .6), (10, .6))), ref)["walls"]
+    skew = evaluate_reference(wall_model(seg((0, -.45), (10, .45))), ref)["walls"]
+    assert near["recall_length"] == pytest.approx(1.0)
+    assert far["recall_length"] == 0
+    assert skew["recall_length"] == 0
+
+
+def test_a_wall_scope_holding_draft_walls_is_not_scored():
+    result = evaluate_reference(wall_model(seg((0, 0), (10, 0))), reference(
+        [], walls=[ref_wall("w1", (0, 0), (10, 0), status="draft")], scopes=[wall_scope([-1, -1, 12, 12])]))
+    assert result["walls"]["evaluated"] is False
+
+
+def test_reference_walls_need_positive_length():
+    with pytest.raises(ValueError, match="positive length"):
+        evaluate_reference(wall_model(), reference([], walls=[ref_wall("w1", (1, 1), (1, 1))]))
+
+
 def test_dimension_benchmark_requires_reviewed_final_model_measurement():
     groundtruth = reference([], dimensions=[{"id": "length", "expected_ft": 10., "status": "reviewed"}])
     check = DimensionCheck("length", (0,0), (10,0), 10., 10., 0., "model-face", "verified")

@@ -32,8 +32,9 @@ Even annotation_status='complete' describes declared scopes, not BIM acceptance.
 
 Optional `dimensions` records require id, expected_ft and status='reviewed';
 model_check_id defaults to id. They compare against associated final-model
-DimensionChecks, not arbitrary nearby lengths. Wall-coverage metrics are not
-implemented. No benchmark result changes model acceptance flags.
+DimensionChecks, not arbitrary nearby lengths. Optional `walls` records
+(start/end in model feet) are scored by length inside complete reviewed scopes
+whose kinds include "wall". No benchmark result changes model acceptance flags.
 """
 from __future__ import annotations
 
@@ -44,7 +45,7 @@ from pathlib import Path
 import re
 
 import networkx as nx
-from shapely.geometry import Point, Polygon, box
+from shapely.geometry import Point, Polygon, box, LineString
 
 REVIEW_ROLES = {"user", "assistant", "external", "unknown"}
 STATUSES = {"draft", "reviewed"}
@@ -175,6 +176,25 @@ def _normalize_reference(data):
         dimension["model_check_id"] = dimension.get("model_check_id", dimension["id"])
         if not isinstance(dimension["model_check_id"], str) or not dimension["model_check_id"]:
             raise ValueError("dimension.model_check_id must be a nonempty string")
+    result["walls"] = _records(result, "walls", result["reviewer"], default_status)
+    for wall in result["walls"]:
+        wall["start"] = _coordinates(wall.get("start"), 2, "wall.start")
+        wall["end"] = _coordinates(wall.get("end"), 2, "wall.end")
+        if math.dist(wall["start"], wall["end"]) <= 0:
+            raise ValueError("reference wall must have positive length")
+        if "thickness_ft" in wall:
+            wall["thickness_ft"] = _number(wall["thickness_ft"], "wall.thickness_ft", positive=True)
+    wall_settings = result.get("wall_matching", {})
+    if not isinstance(wall_settings, dict):
+        raise ValueError("reference.wall_matching must be an object")
+    result["wall_matching"] = {
+        "offset_tolerance_in": _number(wall_settings.get("offset_tolerance_in", 6.0),
+                                       "offset_tolerance_in", positive=True),
+        "max_angle_deg": _number(wall_settings.get("max_angle_deg", 5.0), "max_angle_deg", positive=True),
+        "min_coverage": _number(wall_settings.get("min_coverage", .5), "min_coverage", positive=True),
+    }
+    if result["wall_matching"]["min_coverage"] > 1:
+        raise ValueError("wall_matching.min_coverage must be at most 1")
     return result
 
 
@@ -280,6 +300,76 @@ def _scores(tp, fp, fn):
     return {"tp": tp, "fp": fp, "fn": fn, "precision": precision, "recall": recall, "f1": f1}
 
 
+def _covered(target, others, settings):
+    """Length of `target` lying within tolerance of any near-parallel run in `others`."""
+    (ax, ay), (bx, by) = target
+    length = math.dist(target[0], target[1])
+    ux, uy = (bx - ax) / length, (by - ay) / length
+    tolerance_ft = settings["offset_tolerance_in"] / 12
+    spans = []
+    for (cx, cy), (dx, dy) in others:
+        other = math.dist((cx, cy), (dx, dy))
+        if other <= 0:
+            continue
+        cos = abs(((dx - cx) * ux + (dy - cy) * uy) / other)
+        if math.degrees(math.acos(min(1.0, cos))) > settings["max_angle_deg"] + 1e-9:
+            continue
+        mx, my = (cx + dx) / 2, (cy + dy) / 2
+        if abs((mx - ax) * uy - (my - ay) * ux) > tolerance_ft + 1e-9:
+            continue
+        t0, t1 = sorted((px - ax) * ux + (py - ay) * uy for px, py in ((cx, cy), (dx, dy)))
+        lo, hi = max(0.0, t0), min(length, t1)
+        if hi > lo:
+            spans.append((lo, hi))
+    covered, reached = 0.0, 0.0
+    for lo, hi in sorted(spans):
+        lo = max(lo, reached)
+        if hi > lo:
+            covered += hi - lo
+            reached = hi
+    return covered
+
+
+def _wall_metrics(model, reference, scopes):
+    """Length-based wall recall/precision inside complete, reviewed 'wall' scopes only."""
+    settings = reference["wall_matching"]
+    drafts = [w for w in reference["walls"] if w["status"] != "reviewed"]
+    usable = [s for s in scopes if "wall" in s["kinds"] and not any(
+        box(*s["bounds_ft"]).covers(LineString([w["start"], w["end"]])) for w in drafts)]
+    if not usable:
+        return {"evaluated": False,
+                "reason": "no complete, reviewed scope of kind 'wall' free of draft walls"}
+    areas = [box(*s["bounds_ft"]) for s in usable]
+
+    def scoped(a, b):
+        line = LineString([a, b])
+        return any(area.covers(line) for area in areas)
+
+    refs = [w for w in reference["walls"] if w["status"] == "reviewed" and scoped(w["start"], w["end"])]
+    preds = [w for w in model.walls if scoped(w.start, w.end)]
+    ref_runs = [(tuple(w["start"]), tuple(w["end"])) for w in refs]
+    pred_runs = [(tuple(w.start), tuple(w.end)) for w in preds]
+    ref_cover = [_covered(r, pred_runs, settings) for r in ref_runs]
+    pred_support = [_covered(p, ref_runs, settings) for p in pred_runs]
+    ref_length = sum(math.dist(*r) for r in ref_runs)
+    pred_length = sum(math.dist(*p) for p in pred_runs)
+    floor = settings["min_coverage"]
+    return {
+        "evaluated": True,
+        "scope_ids": [s["id"] for s in usable],
+        "reference_walls": len(refs), "predicted_walls": len(preds),
+        "reference_length_ft": ref_length, "covered_reference_length_ft": sum(ref_cover),
+        "recall_length": sum(ref_cover) / ref_length if ref_length else None,
+        "predicted_length_ft": pred_length, "supported_predicted_length_ft": sum(pred_support),
+        "precision_length": sum(pred_support) / pred_length if pred_length else None,
+        "uncovered_reference_ids": sorted(w["id"] for w, c, r in zip(refs, ref_cover, ref_runs)
+                                          if c < floor * math.dist(*r) - 1e-9),
+        "unsupported_predicted": [{"start": list(w.start), "end": list(w.end), "source_layer": w.source_layer}
+                                  for w, c, p in zip(preds, pred_support, pred_runs)
+                                  if c < floor * math.dist(*p) - 1e-9],
+    }
+
+
 def evaluate_reference(model, reference):
     """Return scoped benchmark evidence; never grant full drawing acceptance."""
     reference = _normalize_reference(reference)
@@ -365,5 +455,5 @@ def evaluate_reference(model, reference):
         "scored_scopes": deepcopy(scopes), "excluded_scopes": excluded_scopes,
         "reference_annotations": deepcopy(annotations),
         "dimensions": dimension_results,
-        "walls": {"evaluated": False, "reason": "wall source coverage is not implemented"},
+        "walls": _wall_metrics(model, reference, scopes),
     }
