@@ -53,6 +53,13 @@ WALL_ROLES: frozenset[Role] = frozenset({Role.WALL_STRUCTURAL, Role.WALL_PARTITI
 # the doubt that keeps it out of the geometry.
 WALL_CONFIDENCE_FLOOR = 0.70
 
+# Roles whose paired parallel lines are systematically not walls and are
+# numerous -- dimension witness lines run parallel at wall-like spacings. Only
+# a CONFIDENT one of these keeps a layer out of wall candidacy; every other
+# role is paired and judged by its geometry.
+NEVER_WALL_ROLES: frozenset[Role] = frozenset(
+    {Role.DIMENSION, Role.TEXT_LABEL, Role.TITLE_BLOCK, Role.GRID})
+
 
 class LayerClassifier(Protocol):
     def classify(self, stats: tuple[LayerStats, ...]) -> Classification:
@@ -81,3 +88,10 @@ def layers_for_roles(classification: Classification,
     """Layer names whose assigned role is in `roles` and clears the floor."""
     return {d.layer for d in classification
             if d.role in roles and d.confidence >= min_confidence}
+
+
+def candidate_layers(classification: Classification, layer_names: set[str]) -> set[str]:
+    """Layers whose geometry may be paired into wall candidates."""
+    excluded = {d.layer.casefold() for d in classification
+                if d.role in NEVER_WALL_ROLES and d.confidence >= WALL_CONFIDENCE_FLOOR}
+    return {name for name in layer_names if name.casefold() not in excluded}
