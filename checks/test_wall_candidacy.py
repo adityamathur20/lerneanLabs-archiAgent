@@ -5,9 +5,9 @@ from archiagent.classify.layers import LayerDecision, candidate_layers
 from archiagent.classify.roles import Role
 from dataclasses import replace
 
-from archiagent.geometry.candidacy import build_context, candidate_signals
+from archiagent.geometry.candidacy import WEIGHTS, band, build_context, candidate_signals, combine, score_candidates
 from archiagent.primitives import Primitive
-from checks.candidacy_fixtures import CLASSIFICATION, shower, showers, source, square, wall
+from checks.candidacy_fixtures import CLASSIFICATION, house, projection, shower, showers, source, square, wall
 
 
 def decision(layer, role, confidence):
@@ -82,3 +82,42 @@ def test_layer_role_is_a_graded_signal_not_a_gate():
 @pytest.mark.parametrize("length,expected", [(1.0, -1.0), (1.5, -1.0), (4.75, 0.0), (8.0, 1.0), (30.0, 1.0)])
 def test_length_ramps_from_glyph_scale_to_wall_scale(length, expected):
     assert signals_of(wall((0, 0), (length, 0)))["length"] == pytest.approx(expected)
+
+
+def bands(walls, ps=None):
+    ctx = build_context(ps or source(), CLASSIFICATION, 1.0)
+    return {c.wall: c.band for c in score_candidates(walls, ctx)}
+
+
+def test_a_boundary_drawn_on_a_furniture_layer_is_accepted():
+    assert set(bands(house()).values()) == {"accept"}
+
+
+def test_every_side_of_every_shower_glyph_is_rejected_even_on_a_wall_layer():
+    entities, primitives, glyphs = showers()
+    result = bands(house(glyphs), source(primitives, entities))
+    assert {result[w] for w in glyphs} == {"reject"}
+    assert {result[w] for w in house()} == {"accept"}
+
+
+def test_a_short_projection_run_touching_the_house_is_ambiguous():
+    run = projection()
+    assert bands(house((run,)))[run] == "ambiguous"
+
+
+def test_score_is_the_weighted_mean_mapped_to_zero_one():
+    assert combine(tuple((name, 1.0) for name in WEIGHTS)) == pytest.approx(1.0)
+    assert combine(tuple((name, -1.0) for name in WEIGHTS)) == pytest.approx(0.0)
+    assert combine(tuple((name, 0.0) for name in WEIGHTS)) == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize("score,expected", [(.65, "accept"), (.649, "ambiguous"), (.35, "reject"), (.351, "ambiguous")])
+def test_thresholds_are_decisive_at_the_boundary(score, expected):
+    assert band(score) == expected
+
+
+def test_candidate_ids_are_stable_and_unique():
+    ctx = build_context(source(), CLASSIFICATION, 1.0)
+    first = [c.id for c in score_candidates(house(), ctx)]
+    assert first == [c.id for c in score_candidates(house(), ctx)]
+    assert len(set(first)) == len(first)
