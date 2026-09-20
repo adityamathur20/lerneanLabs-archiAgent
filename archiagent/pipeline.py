@@ -78,7 +78,8 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
     # Reviewed instance records are frozen decisions, not fresh hypotheses.
     if "symbols" not in review:
         symbols = contextualize_openings(ps, symbols, scale.units_per_foot)
-    wall_ps = exclude_symbol_geometry(ps, tuple(s for s in symbols if not yields_to_walls(s)))
+    wall_ps = exclude_symbol_geometry(
+        ps, symbols if "symbols" in review else tuple(s for s in symbols if not yields_to_walls(s)))
     profile_warnings = ()
     if "wall_profiles" in review:
         # Explicit records replace hypotheses, including an explicit empty list.
@@ -105,8 +106,13 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
     walls, candidate_decisions, candidacy_issues = select_walls(
         wall_ps, combine_wall_hypotheses(paired, filled), classification,
         scale.units_per_foot, adjudicator=adjudicator)
-    symbols, superseded = reconcile_symbols(symbols, walls, ps, classification,
-                                            scale.units_per_foot)
+    if "symbols" in review:
+        # Reviewed instance records are frozen decisions: candidacy may still
+        # accept their geometry as a wall, but the symbol itself never splits.
+        superseded = ()
+    else:
+        symbols, superseded = reconcile_symbols(symbols, walls, ps, classification,
+                                                scale.units_per_foot)
     # Instance exclusions replace the old global stair-spacing deletion rule.
     graph = resolve_junctions(walls, min_dangle_ft=0)
     repair_snap_in, repair_extend_in = graph.snap_in, graph.extend_in

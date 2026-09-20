@@ -151,8 +151,29 @@ def test_an_ambiguous_run_keeps_the_outcome_it_had_before_candidacy():
     accepted, decisions, issues = select_walls(source(), house((stub, run)), CLASSIFICATION, 1.0)
     assert by_wall(decisions)[stub].verdict_source == by_wall(decisions)[run].verdict_source == "ambiguous-default"
     assert stub in accepted and run not in accepted
-    assert [i.code for i in issues if i.severity == "warn"] == ["wall_candidate_unresolved"]
+    warnings = [i for i in issues if i.severity == "warn"]
+    assert [i.code for i in warnings] == ["wall_candidate_unresolved"]
+    assert "'PROJECTION'" in warnings[0].msg
     assert [i.code for i in issues if i.severity == "info"] == ["wall_candidates_kept_by_default"]
+
+
+def test_many_default_rejects_collapse_into_a_single_warn_naming_the_longest_five():
+    # Three ambiguous runs, none on a wall layer, so all default to reject.
+    # The old behaviour emitted one warn Issue per run -- a warn storm on real
+    # drawings; the fix must summarise them into exactly one.
+    runs = (wall((-3, 5), (0, 5), .375, layer="PROJECTION", ids=("q0", "q1")),
+           wall((-9, 10), (0, 10), .375, layer="PROJECTION", ids=("q2", "q3")),
+           wall((-6, 15), (0, 15), .375, layer="PROJECTION", ids=("q4", "q5")))
+    accepted, decisions, issues = select_walls(source(), house(runs), CLASSIFICATION, 1.0)
+    rejects = [by_wall(decisions)[r] for r in runs]
+    assert {d.verdict_source for d in rejects} == {"ambiguous-default"}
+    assert {d.verdict for d in rejects} == {"reject"}
+    assert not any(r in accepted for r in runs)
+    warnings = [i for i in issues if i.severity == "warn"]
+    assert [i.code for i in warnings] == ["wall_candidate_unresolved"]
+    assert warnings[0].entity == "wall-candidates"
+    assert warnings[0].msg.count("PROJECTION") == 3
+    assert "9.0ft" in warnings[0].msg and "6.0ft" in warnings[0].msg and "3.0ft" in warnings[0].msg
 
 
 def test_a_confident_adjudication_settles_an_ambiguous_run_and_a_weak_one_does_not():
@@ -222,9 +243,10 @@ from archiagent.interpretation import _decisions, _decode
 from archiagent.pipeline import extract_from_dxf
 
 
-def build(extra_primitives=(), entities=()):
+def build(extra_primitives=(), entities=(), review=None):
     ps = source(house_faces() + tuple(extra_primitives), entities)
-    return extract_from_dxf(ps, SimpleNamespace(classify=lambda stats: CLASSIFICATION), units_per_foot=1.0)
+    return extract_from_dxf(ps, SimpleNamespace(classify=lambda stats: CLASSIFICATION), units_per_foot=1.0,
+                            review=review)
 
 
 def test_the_pipeline_builds_a_boundary_drawn_on_furni_and_not_the_shower_glyphs():
@@ -240,6 +262,18 @@ def test_layer_inferred_furniture_no_longer_hides_boundary_faces_from_candidacy(
     model = build()
     assert not [s for s in model.symbols if s.kind == "furniture"]
     assert "symbol_superseded_by_wall" in {i.code for i in model.issues}
+
+
+def test_a_reviewed_symbol_survives_untouched_even_though_its_geometry_would_become_a_wall():
+    # t0/t1 (furni-layer) is exactly the geometry candidacy accepts as a wall
+    # when it is left as a fresh hypothesis (see the boundary-on-furni tests
+    # above). A reviewer's frozen instance record over that same geometry is a
+    # decision already made, not a hypothesis for candidacy to re-litigate.
+    symbol = SymbolInstance("reviewed-1", "furniture", (15, 20), 30., .75,
+                            source_ids=("t0", "t1"), evidence="layer-and-geometry")
+    model = build(review={"symbols": [asdict(symbol)]})
+    assert model.symbols == (symbol,)
+    assert {i.code for i in model.issues} & {"symbol_split_by_wall", "symbol_superseded_by_wall"} == set()
 
 
 def test_interpretation_records_every_candidate_with_its_verdict():

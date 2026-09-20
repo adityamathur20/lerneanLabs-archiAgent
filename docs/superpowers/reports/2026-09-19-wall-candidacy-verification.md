@@ -360,6 +360,23 @@ under Open items rather than acted on unilaterally.
   Wiring up and running the vision adjudicator (Task 9's mechanism) against
   this drawing is the natural next step to close this gap, once a provider
   is confirmed intentional.
+- **This is a structural threshold limitation, not specific to `furni`.**
+  With `WEIGHTS` summing to 12.0, any candidate with `closure = 0` (an open
+  loop) and `layer_role = 0` (a layer with no wall-role signal either way)
+  tops out at `(1·1 + 2·1 + 0.5·1) / 12 = 0.2917` even with every other
+  signal maximal, mapping to `(0.2917 + 1) / 2 = 0.6458` — below
+  `ACCEPT_FLOOR = 0.65`. A wall on a non-wall layer sitting in a genuinely
+  open loop (one end touching nothing) can therefore never be accepted
+  deterministically, however good its geometry — closure alone cannot make
+  up the gap without either a wall-role layer or a raised connectivity
+  weight. The review offered three options, none applied here: (1) lower
+  `ACCEPT_FLOOR` to roughly 0.62; (2) raise the connectivity weight to
+  roughly 2.5; or (3) annotate `VINAYAK APARTMENTS.dxf` first, as the spec
+  already mandates, and tune against both sheets together. Measuring
+  precision/recall before and after any such change is required, not
+  optional: the 0.5–0.7 score band is densely populated, so a small
+  threshold or weight change is likely to flip many candidates' verdicts at
+  once, not just the four discussed above.
 - **The `ARCHIAGENT_LLM_PROVIDER`/`OPENAI_API_KEY` environment variables
   present in this shell** were not used (see "Adjudication" above) — confirm
   with the requester whether that configuration is intentional before any

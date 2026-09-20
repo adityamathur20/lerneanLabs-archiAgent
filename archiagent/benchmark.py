@@ -304,6 +304,8 @@ def _covered(target, others, settings):
     """Length of `target` lying within tolerance of any near-parallel run in `others`."""
     (ax, ay), (bx, by) = target
     length = math.dist(target[0], target[1])
+    if length <= 0:
+        return 0.0
     ux, uy = (bx - ax) / length, (by - ay) / length
     tolerance_ft = settings["offset_tolerance_in"] / 12
     spans = []

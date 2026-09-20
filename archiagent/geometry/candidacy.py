@@ -337,15 +337,20 @@ def select_walls(ps: PrimitiveSet, proposed, classification: Classification, uni
     decisions += [_decide(c, verdicts.get(c.id), c.wall.source_layer.casefold() in wall_layers)
                   for c in scored]
     kept_by_default = 0
+    rejected_by_default = []
     for d in decisions:
         if d.verdict_source != "ambiguous-default":
             continue
         if d.verdict == "reject":
-            issues.append(Issue("warn", d.id, "wall_candidate_unresolved",
-                                f"{d.wall.source_layer!r} run of {d.wall.length_ft:.1f}ft: {d.reason}; "
-                                "rejected by default"))
+            rejected_by_default.append(d.wall)
         else:
             kept_by_default += 1
+    if rejected_by_default:
+        top = sorted(rejected_by_default, key=lambda w: -w.length_ft)[:5]
+        named = ", ".join(f"{w.source_layer!r} {w.length_ft:.1f}ft" for w in top)
+        issues.append(Issue("warn", "wall-candidates", "wall_candidate_unresolved",
+                            f"{len(rejected_by_default)} ambiguous runs rejected by default; "
+                            f"longest: {named}"))
     if kept_by_default:
         issues.append(Issue("info", "wall-candidates", "wall_candidates_kept_by_default",
                             f"{kept_by_default} uncertain runs on wall layers kept, as before candidacy"))

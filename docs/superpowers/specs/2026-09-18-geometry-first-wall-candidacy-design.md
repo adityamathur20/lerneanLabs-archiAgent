@@ -307,3 +307,16 @@ no client, mirroring how `decisions_from_reply` isolates validation.
   as well as right ones.
 - **Ambiguous-band default.** See the rationale above; revisit once metrics
   exist.
+- **A wall on a non-wall layer in an open loop can never be accepted
+  deterministically, however good its geometry.** With `WEIGHTS` summing to
+  12.0, a candidate with `closure = 0` (no loop) and `layer_role = 0` (not a
+  wall layer) scores at most `(1·1 + 2·1 + 0.5·1) / 12 = 0.2917` even when
+  every other signal (length, connectivity, thickness) is maximal, which maps
+  to `(0.2917 + 1) / 2 = 0.6458` — below `ACCEPT_FLOOR = 0.65`. Deterministic
+  acceptance therefore requires either a confident wall-layer role or
+  participation in a building-scale (closed) loop. On the sample drawing this
+  is exactly why 4 envelope wall runs remain undetected: their loops are
+  genuinely open, one end touching nothing. `ACCEPT_FLOOR`, `REJECT_CEILING`
+  and `WEIGHTS` are left unchanged here — that calibration decision belongs to
+  the user and the spec requires a second annotated drawing first (see
+  Measurement, above).

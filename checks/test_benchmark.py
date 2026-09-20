@@ -207,6 +207,15 @@ def test_reference_walls_need_positive_length():
         evaluate_reference(wall_model(), reference([], walls=[ref_wall("w1", (1, 1), (1, 1))]))
 
 
+def test_a_zero_length_predicted_wall_does_not_crash_the_evaluation():
+    # Only reference walls are validated to have positive length; a degenerate
+    # predicted WallSeg must not raise ZeroDivisionError inside _covered.
+    predicted = wall_model(seg((0, 0), (10, 0)), seg((5, 5), (5, 5)))
+    result = evaluate_reference(predicted, reference(
+        [], walls=[ref_wall("w1", (0, 0), (10, 0))], scopes=[wall_scope([-1, -1, 20, 20])]))
+    assert result["walls"]["evaluated"] is True
+
+
 def test_dimension_benchmark_requires_reviewed_final_model_measurement():
     groundtruth = reference([], dimensions=[{"id": "length", "expected_ft": 10., "status": "reviewed"}])
     check = DimensionCheck("length", (0,0), (10,0), 10., 10., 0., "model-face", "verified")
