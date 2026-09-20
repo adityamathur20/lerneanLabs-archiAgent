@@ -10,7 +10,8 @@ from archiagent.geometry.candidacy import (WEIGHTS, band, build_context, candida
 from archiagent.model import Issue
 from archiagent.primitives import Primitive
 from archiagent.semantic import SymbolInstance
-from checks.candidacy_fixtures import CLASSIFICATION, house, projection, shower, showers, source, square, wall
+from checks.candidacy_fixtures import (CLASSIFICATION, house, house_faces, projection, shower, showers,
+                                       source, square, wall)
 
 
 def decision(layer, role, confidence):
@@ -210,3 +211,45 @@ def test_a_symbol_that_loses_lines_to_a_wall_is_split_not_dropped():
     assert kept[1].width_ft == pytest.approx(6.0)
     assert {(i.entity, i.code) for i in issues} == {("furniture-a", "symbol_split_by_wall"),
                                                    ("furniture-b", "symbol_superseded_by_wall")}
+
+
+import json
+from dataclasses import asdict
+from types import SimpleNamespace
+
+from archiagent.geometry.candidates import CandidateDecision
+from archiagent.interpretation import _decisions, _decode
+from archiagent.pipeline import extract_from_dxf
+
+
+def build(extra_primitives=(), entities=()):
+    ps = source(house_faces() + tuple(extra_primitives), entities)
+    return extract_from_dxf(ps, SimpleNamespace(classify=lambda stats: CLASSIFICATION), units_per_foot=1.0)
+
+
+def test_the_pipeline_builds_a_boundary_drawn_on_furni_and_not_the_shower_glyphs():
+    entities, primitives, _ = showers(side=3.0)          # 3ft glyphs: faces pair at 6in over 2ft
+    model = build(primitives, entities)
+    assert sum(w.length_ft for w in model.walls) == pytest.approx(100, abs=2)
+    assert all(max(w.start[0], w.end[0]) <= 31 for w in model.walls)
+    glyph_runs = [c for c in model.wall_candidates if min(c.wall.start[0], c.wall.end[0]) >= 39]
+    assert glyph_runs and {c.verdict for c in glyph_runs} == {"reject"}
+
+
+def test_layer_inferred_furniture_no_longer_hides_boundary_faces_from_candidacy():
+    model = build()
+    assert not [s for s in model.symbols if s.kind == "furniture"]
+    assert "symbol_superseded_by_wall" in {i.code for i in model.issues}
+
+
+def test_interpretation_records_every_candidate_with_its_verdict():
+    entities, primitives, _ = showers(side=3.0)
+    model = build(primitives, entities)
+    records = [r for r in _decisions((model,)) if "/wall-candidate-" in r["id"]]
+    assert len(records) == len(model.wall_candidates)
+    assert {r["status"] for r in records} == {"accepted_by_rule", "rejected_by_rule"}
+
+
+def test_candidate_decisions_survive_a_json_round_trip():
+    decision = build().wall_candidates[0]
+    assert _decode(json.loads(json.dumps(asdict(decision))), CandidateDecision, "d") == decision

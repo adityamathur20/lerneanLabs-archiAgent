@@ -140,6 +140,10 @@ def _decisions(models):
             model.scale.convention, asdict(model.scale))
         for i, wall in enumerate(model.walls):
             add(f"wall-{i}", "accepted_by_rule", wall.detector, asdict(wall), wall.source_ids)
+        for candidate in getattr(model, "wall_candidates", ()):
+            add(f"wall-candidate-{candidate.id}",
+                "accepted_by_rule" if candidate.verdict == "accept" else "rejected_by_rule",
+                candidate.verdict_source, asdict(candidate), candidate.wall.source_ids)
         for profile in getattr(model, "wall_profiles", ()):
             add(f"profile-{profile.id}", profile.review_status, profile.detector,
                 asdict(profile), profile.source_ids)

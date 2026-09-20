@@ -96,7 +96,7 @@ classification
  └─ combine_wall_hypotheses(…)                           unchanged
  └─ score_candidates(walls, classification, ctx)         NEW, deterministic
  └─ adjudicate_ambiguous(…)                              NEW, vision, optional
- └─ reject_ladder_runs(…)                                unchanged
+ └─ reject_ladder_runs(admitted-layer runs only)   existing rule, re-applied
  └─ (accepted, rejected+reasons) → junctions → IFC
               └─ provenance record
 ```
@@ -104,6 +104,14 @@ classification
 This mirrors precedent already in the codebase: `reject_ladder_runs` proposes
 then rejects geometrically and returns `(kept, rejected)`. This work
 generalises that shape and widens what gets proposed.
+
+`recognize_symbols` also gates walls: symbols it infers only from a layer's
+role (evidence `layer-and-geometry`; kinds `furniture`, `stair`, `electrical`,
+`plumbing`, `vehicle`) no longer hide their geometry from the detectors. If
+candidacy accepts part of one as a wall, the symbol is split: its remaining
+lines are regrouped by the `recognize_symbols` rules and keep their label
+(info Issue `symbol_split_by_wall`), or it is dropped if nothing of that kind
+remains (`symbol_superseded_by_wall`).
 
 ### `candidate_layers(classification)`
 
@@ -185,15 +193,13 @@ largest magnitudes, since those are the signals that separate the two known
 defects; layer role is deliberately mid-weight so it can be outvoted by
 geometry, which is the entire point of the change.
 
-Ambiguous candidates escalate to vision adjudication when enabled. Those that
-remain unadjudicated — adjudication disabled, over the batch cap, or any failure
-path — **default to reject**, and are always recorded in provenance and reported
-as an Issue at `warn`.
-
-Rationale: the project's stated principle is that an omission should be
-conspicuous, not absorbed (`layers.py`, on `source="default"`). A rejected
-candidate with a full score breakdown and a warning is conspicuous; a phantom
-wall in the IFC is not.
+Ambiguous candidates escalate to vision adjudication when enabled. An ambiguous
+candidate that stays unsettled keeps the outcome it had before candidacy:
+accepted if its layer holds a confident wall role (as `layers_for_roles`
+admitted it), rejected otherwise. Default rejects are reported at `warn`;
+default accepts are summarised in one `info` Issue. A blanket reject would
+delete short wall pieces between door openings, which score as ambiguous
+because they join other walls at one end only.
 
 This is the setting most likely to need revisiting once wall-coverage metrics
 exist, since the opposite argument is also real: a phantom wall is visible in
@@ -224,6 +230,9 @@ reports an Issue, and never fails the build.
 Adjudication is **on by default** for DXF input, matching the shipped stage-2
 vision policy, and is disabled by `--no-wall-adjudication`. With it disabled the
 pipeline stays fully deterministic.
+
+`--no_vision` and `ARCHIAGENT_VISION=0` also disable adjudication, since it
+sends drawing images to the provider.
 
 ## Provenance
 

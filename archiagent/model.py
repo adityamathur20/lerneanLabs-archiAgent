@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from archiagent.classify.layers import LayerDecision
+from archiagent.geometry.candidates import CandidateDecision
 from archiagent.geometry.junctions import Junction, EndpointAdjustment
 from archiagent.geometry.spaces import Space
 from archiagent.geometry.walls import WallSeg
@@ -52,6 +53,7 @@ class BuildingModel:
     source_region_bounds: tuple[float, ...] = ()
     source_origin: Pt = (0.0, 0.0)
     wall_profiles: tuple[WallProfile, ...] = ()
+    wall_candidates: tuple[CandidateDecision, ...] = ()
 
     def envelope(self) -> tuple[float, float, float, float]:
         xs = [c for w in self.walls for c in (w.start[0], w.end[0])]

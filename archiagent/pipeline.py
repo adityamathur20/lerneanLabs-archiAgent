@@ -22,8 +22,10 @@ from archiagent.validate import validate
 
 
 def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
-              measurements=(), review=None):
+              measurements=(), review=None, adjudicator=None):
     import math
+    from archiagent.classify.layers import candidate_layers
+    from archiagent.geometry.candidacy import reconcile_symbols, select_walls, yields_to_walls
     from archiagent.recognition import (recognize_symbols, exclude_symbol_geometry,
                                         host_openings, remap_openings)
     from archiagent.geometry.walls import detect_walls_filled_bodies, combine_wall_hypotheses
@@ -76,7 +78,7 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
     # Reviewed instance records are frozen decisions, not fresh hypotheses.
     if "symbols" not in review:
         symbols = contextualize_openings(ps, symbols, scale.units_per_foot)
-    wall_ps = exclude_symbol_geometry(ps, symbols)
+    wall_ps = exclude_symbol_geometry(ps, tuple(s for s in symbols if not yields_to_walls(s)))
     profile_warnings = ()
     if "wall_profiles" in review:
         # Explicit records replace hypotheses, including an explicit empty list.
@@ -97,9 +99,14 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
                 max_cells=config.get("max_cells", 10000),
                 max_intersections=config.get("max_intersections", 100000))
             wall_profiles = tuple(sorted((*wall_profiles, *additional), key=lambda p: p.id))
-    paired = detect_walls_paired_lines(wall_ps, wall_layers, scale.units_per_foot)
-    filled = detect_walls_filled_bodies(wall_ps, wall_layers, scale.units_per_foot)
-    walls = combine_wall_hypotheses(paired, filled)
+    pair_layers = candidate_layers(classification, wall_ps.layer_names())
+    paired = detect_walls_paired_lines(wall_ps, pair_layers, scale.units_per_foot)
+    filled = detect_walls_filled_bodies(wall_ps, pair_layers, scale.units_per_foot)
+    walls, candidate_decisions, candidacy_issues = select_walls(
+        wall_ps, combine_wall_hypotheses(paired, filled), classification,
+        scale.units_per_foot, adjudicator=adjudicator)
+    symbols, superseded = reconcile_symbols(symbols, walls, ps, classification,
+                                            scale.units_per_foot)
     # Instance exclusions replace the old global stair-spacing deletion rule.
     graph = resolve_junctions(walls, min_dangle_ft=0)
     repair_snap_in, repair_extend_in = graph.snap_in, graph.extend_in
@@ -169,7 +176,8 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
                           source_origin=region.origin if region else (0.0, 0.0),
                           endpoint_adjustments=graph.adjustments,
                           wall_profiles=wall_profiles,
-                          repair_snap_in=repair_snap_in, repair_extend_in=repair_extend_in)
+                          repair_snap_in=repair_snap_in, repair_extend_in=repair_extend_in,
+                          wall_candidates=candidate_decisions)
     ingest_issues = tuple(Issue("warn", w.source_id, w.code, w.message)
                           for w in (*ps.warnings, *profile_warnings))
     geometry_issues = ()
@@ -179,7 +187,7 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
     if ps.declared_units_per_foot and not math.isclose(ps.declared_units_per_foot,scale.units_per_foot):
         ingest_issues += (Issue("warn","scale","declared_units_overridden",
                                f"header={ps.declared_units_per_foot} units/ft, using {scale.units_per_foot}; dimension checks determine acceptance"),)
-    return replace(model, issues=validate(model)+ingest_issues+geometry_issues)
+    return replace(model, issues=validate(model)+ingest_issues+geometry_issues+candidacy_issues+superseded)
 
 
 def extract_from_primitives(ps: PrimitiveSet, classifier: LayerClassifier,
@@ -202,10 +210,10 @@ def extract_from_primitives(ps: PrimitiveSet, classifier: LayerClassifier,
 
 def extract_from_dxf(ps: PrimitiveSet, classifier: LayerClassifier, *,
                      units_per_foot: float, wall_height_ft: float = 10.0,
-                     region=None, measurements=(), review=None) -> BuildingModel:
+                     region=None, measurements=(), review=None, adjudicator=None) -> BuildingModel:
     scale = ScaleResult(units_per_foot,"source-units-unverified",(),0.0,0)
     return _assemble(ps,classifier.classify(build_inventory(ps)),scale,wall_height_ft,
-                     region=region,measurements=measurements,review=review)
+                     region=region,measurements=measurements,review=review,adjudicator=adjudicator)
 
 
 def extract(pdf_path: str | Path, classifier: LayerClassifier, page: int = 0,
