@@ -9,15 +9,19 @@ from __future__ import annotations
 import hashlib
 from collections import Counter
 from dataclasses import dataclass
+from typing import Callable
 
 import networkx as nx
 from shapely.geometry import LineString, Point, Polygon
 from shapely.strtree import STRtree
 
-from archiagent.classify.layers import WALL_CONFIDENCE_FLOOR, WALL_ROLES, Classification
+from archiagent.classify.layers import WALL_CONFIDENCE_FLOOR, WALL_ROLES, Classification, layers_for_roles
 from archiagent.classify.roles import Role
-from archiagent.geometry.walls import WallSeg
+from archiagent.geometry.candidates import CandidateDecision
+from archiagent.geometry.walls import WallSeg, reject_ladder_runs
+from archiagent.model import Issue
 from archiagent.primitives import PrimitiveSet
+from archiagent.semantic import SymbolInstance
 
 SMALL_FT = 4.0        # a closed outline or run below this is fixture/glyph scale
 REPEAT_MIN = 3        # a block inserted this often is a symbol, not a one-off
@@ -239,3 +243,112 @@ def score_candidates(walls, ctx: Context) -> tuple[ScoredCandidate, ...]:
         score = combine(signals)
         out.append(ScoredCandidate(candidate_id(w), w, signals, score, band(score)))
     return tuple(out)
+
+
+ADJUDICATION_CONFIDENCE_FLOOR = 0.70
+# Symbols inferred ONLY from a layer's role are the same layer gate this module
+# removes. Their geometry stays visible to candidacy, which decides.
+YIELDING_KINDS = frozenset({"furniture", "stair", "electrical", "plumbing", "vehicle"})
+
+Adjudicator = Callable[[PrimitiveSet, tuple[ScoredCandidate, ...], float],
+                       tuple[dict[str, tuple[str, float, str]], tuple[Issue, ...]]]
+
+
+def yields_to_walls(symbol: SymbolInstance) -> bool:
+    return symbol.evidence == "layer-and-geometry" and symbol.kind in YIELDING_KINDS
+
+
+def reconcile_symbols(symbols, walls, ps: PrimitiveSet, classification: Classification,
+                      units_per_foot: float) -> tuple[tuple[SymbolInstance, ...], tuple[Issue, ...]]:
+    """Split layer-inferred symbols whose geometry was partly accepted as a wall.
+
+    The wall lines go to the wall. The remaining lines are regrouped by the very
+    rules recognize_symbols used to form the symbol, so the leftover furniture
+    keeps its label -- as one piece, or several if the wall line was what joined them.
+    """
+    from dataclasses import replace
+
+    from archiagent.recognition import recognize_symbols
+
+    wall_ids = {sid for w in walls for sid in w.source_ids}
+    kept, regrouped, issues = [], [], []
+    for s in symbols:
+        if not (yields_to_walls(s) and wall_ids.intersection(s.source_ids)):
+            kept.append(s)
+            continue
+        rest = set(s.source_ids) - wall_ids
+        pieces = ()
+        if rest:
+            remainder = replace(ps, primitives=tuple(p for p in ps.primitives if p.source_id in rest),
+                                entities=())
+            pieces = tuple(p for p in recognize_symbols(remainder, units_per_foot, classification)
+                           if p.kind == s.kind and p.evidence == "layer-and-geometry")
+        if pieces:
+            regrouped.extend(pieces)
+            issues.append(Issue("info", s.id, "symbol_split_by_wall",
+                                f"{s.kind} inferred from its layer's role: {len(s.source_ids) - len(rest)} "
+                                f"lines became walls; the rest kept as {len(pieces)} {s.kind} symbol(s)"))
+        else:
+            issues.append(Issue("info", s.id, "symbol_superseded_by_wall",
+                                f"{s.kind} inferred from its layer's role: its geometry was accepted "
+                                "as a wall, leaving nothing of that kind"))
+    return tuple(kept) + tuple(regrouped), tuple(issues)
+
+
+def _explain(c: ScoredCandidate) -> str:
+    ranked = sorted(c.signals, key=lambda s: -abs(WEIGHTS[s[0]] * s[1]))
+    top = ", ".join(f"{name}={value:+.2f}" for name, value in ranked[:3] if value)
+    return f"score {c.score:.2f} ({top or 'no decisive signal'})"
+
+
+def _decide(c: ScoredCandidate, verdict, on_wall_layer: bool) -> CandidateDecision:
+    if c.band != "ambiguous":
+        return CandidateDecision(c.id, c.wall, c.signals, c.score, c.band, "deterministic", _explain(c))
+    if verdict is not None and verdict[1] >= ADJUDICATION_CONFIDENCE_FLOOR:
+        label, confidence, reason = verdict
+        return CandidateDecision(c.id, c.wall, c.signals, c.score,
+                                 "accept" if label == "wall" else "reject", "adjudicated",
+                                 f"{label} ({confidence:.2f}): {reason}")
+    # Unsettled: keep the outcome the layer gate gave before candidacy existed.
+    return CandidateDecision(c.id, c.wall, c.signals, c.score,
+                             "accept" if on_wall_layer else "reject", "ambiguous-default", _explain(c))
+
+
+def select_walls(ps: PrimitiveSet, proposed, classification: Classification, units_per_foot: float,
+                 *, adjudicator: Adjudicator | None = None
+                 ) -> tuple[tuple[WallSeg, ...], tuple[CandidateDecision, ...], tuple[Issue, ...]]:
+    """Accepted walls (in proposed order), a decision for every run, and issues."""
+    proposed = tuple(proposed)
+    wall_layers = {n.casefold() for n in layers_for_roles(classification, WALL_ROLES, WALL_CONFIDENCE_FLOOR)}
+    established = tuple(w for w in proposed if w.source_layer.casefold() in wall_layers)
+    admitted = tuple(w for w in proposed if w.source_layer.casefold() not in wall_layers)
+    # Stair treads now get paired on stair layers; the ladder rule is applied to
+    # newly admitted layers only, so wall-layer behaviour is unchanged.
+    kept, ladders = reject_ladder_runs(admitted) if admitted else ((), ())
+    scored = score_candidates(established + tuple(kept), build_context(ps, classification, units_per_foot))
+    verdicts, issues = {}, []
+    ambiguous = tuple(c for c in scored if c.band == "ambiguous")
+    if ambiguous and adjudicator is not None:
+        verdicts, adjudication_issues = adjudicator(ps, ambiguous, units_per_foot)
+        issues.extend(adjudication_issues)
+    decisions = [CandidateDecision(candidate_id(w), w, (), 0.0, "reject", "ladder-run",
+                                   "evenly spaced parallel runs: stair treads or hatching")
+                 for w in ladders]
+    decisions += [_decide(c, verdicts.get(c.id), c.wall.source_layer.casefold() in wall_layers)
+                  for c in scored]
+    kept_by_default = 0
+    for d in decisions:
+        if d.verdict_source != "ambiguous-default":
+            continue
+        if d.verdict == "reject":
+            issues.append(Issue("warn", d.id, "wall_candidate_unresolved",
+                                f"{d.wall.source_layer!r} run of {d.wall.length_ft:.1f}ft: {d.reason}; "
+                                "rejected by default"))
+        else:
+            kept_by_default += 1
+    if kept_by_default:
+        issues.append(Issue("info", "wall-candidates", "wall_candidates_kept_by_default",
+                            f"{kept_by_default} uncertain runs on wall layers kept, as before candidacy"))
+    accepted_ids = {d.id for d in decisions if d.verdict == "accept"}
+    accepted = tuple(w for w in proposed if candidate_id(w) in accepted_ids)
+    return accepted, tuple(sorted(decisions, key=lambda d: d.id)), tuple(issues)

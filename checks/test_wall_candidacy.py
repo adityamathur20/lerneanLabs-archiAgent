@@ -5,8 +5,11 @@ from archiagent.classify.layers import LayerDecision, candidate_layers
 from archiagent.classify.roles import Role
 from dataclasses import replace
 
-from archiagent.geometry.candidacy import WEIGHTS, band, build_context, candidate_signals, combine, score_candidates
+from archiagent.geometry.candidacy import (WEIGHTS, band, build_context, candidate_signals, combine,
+                                           reconcile_symbols, score_candidates, select_walls, yields_to_walls)
+from archiagent.model import Issue
 from archiagent.primitives import Primitive
+from archiagent.semantic import SymbolInstance
 from checks.candidacy_fixtures import CLASSIFICATION, house, projection, shower, showers, source, square, wall
 
 
@@ -121,3 +124,89 @@ def test_candidate_ids_are_stable_and_unique():
     first = [c.id for c in score_candidates(house(), ctx)]
     assert first == [c.id for c in score_candidates(house(), ctx)]
     assert len(set(first)) == len(first)
+
+
+STAIR_CLASSIFICATION = CLASSIFICATION + (LayerDecision("STAIR", Role.STAIR, .8, "", "llm"),)
+
+
+def by_wall(decisions):
+    return {d.wall: d for d in decisions}
+
+
+def test_select_walls_keeps_the_boundary_drops_the_glyphs_and_records_every_run():
+    entities, primitives, glyphs = showers()
+    accepted, decisions, _ = select_walls(source(primitives, entities), house(glyphs), CLASSIFICATION, 1.0)
+    assert accepted == house()
+    assert len(decisions) == len(house(glyphs))
+    glyph_decisions = [by_wall(decisions)[w] for w in glyphs]
+    assert {d.verdict for d in glyph_decisions} == {"reject"}
+    assert {d.verdict_source for d in glyph_decisions} == {"deterministic"}
+    assert "nested_outline" in glyph_decisions[0].reason
+
+
+def test_an_ambiguous_run_keeps_the_outcome_it_had_before_candidacy():
+    stub = wall((30, 10), (33, 10), ids=("s0", "s1"))    # on WALL: the old gate accepted it
+    run = projection()                                     # on PROJECTION: never paired before
+    accepted, decisions, issues = select_walls(source(), house((stub, run)), CLASSIFICATION, 1.0)
+    assert by_wall(decisions)[stub].verdict_source == by_wall(decisions)[run].verdict_source == "ambiguous-default"
+    assert stub in accepted and run not in accepted
+    assert [i.code for i in issues if i.severity == "warn"] == ["wall_candidate_unresolved"]
+    assert [i.code for i in issues if i.severity == "info"] == ["wall_candidates_kept_by_default"]
+
+
+def test_a_confident_adjudication_settles_an_ambiguous_run_and_a_weak_one_does_not():
+    run = projection()
+    confident = lambda ps, candidates, upf: ({c.id: ("wall", .9, "parapet") for c in candidates}, ())
+    weak = lambda ps, candidates, upf: ({c.id: ("wall", .5, "unsure") for c in candidates}, ())
+    accepted, decisions, _ = select_walls(source(), house((run,)), CLASSIFICATION, 1.0, adjudicator=confident)
+    assert run in accepted and by_wall(decisions)[run].verdict_source == "adjudicated"
+    accepted, _, _ = select_walls(source(), house((run,)), CLASSIFICATION, 1.0, adjudicator=weak)
+    assert run not in accepted
+
+
+def test_only_ambiguous_runs_reach_the_adjudicator_and_its_issues_are_kept():
+    seen = []
+
+    def adjudicator(ps, candidates, upf):
+        seen.extend(c.wall for c in candidates)
+        return {}, (Issue("warn", "x", "wall_adjudication_skipped", "test"),)
+
+    _, _, issues = select_walls(source(), house((projection(),)), CLASSIFICATION, 1.0, adjudicator=adjudicator)
+    assert seen == [projection()]
+    assert "wall_adjudication_skipped" in {i.code for i in issues}
+
+
+def test_ladder_runs_are_rejected_only_on_newly_admitted_layers():
+    treads = tuple(wall((50, y), (54, y), .8, layer="STAIR", ids=(f"s{y}",)) for y in (0, 2, 4, 6, 8))
+    _, decisions, _ = select_walls(source(), treads, STAIR_CLASSIFICATION, 1.0)
+    assert {d.verdict_source for d in decisions} == {"ladder-run"}
+    on_wall_layer = tuple(replace(w, source_layer="WALL") for w in treads)
+    _, decisions, _ = select_walls(source(), on_wall_layer, STAIR_CLASSIFICATION, 1.0)
+    assert "ladder-run" not in {d.verdict_source for d in decisions}
+
+
+def test_only_layer_inferred_nonstructural_symbols_yield_to_walls():
+    symbol = lambda kind, evidence: SymbolInstance("s", kind, (0, 0), 1., 1., evidence=evidence)
+    assert yields_to_walls(symbol("furniture", "layer-and-geometry"))
+    assert yields_to_walls(symbol("stair", "layer-and-geometry"))
+    assert not yields_to_walls(symbol("furniture", "block-metadata"))
+    assert not yields_to_walls(symbol("door", "layer-and-geometry"))
+    assert not yields_to_walls(symbol("column", "layer-and-geometry"))
+
+
+def test_a_symbol_that_loses_lines_to_a_wall_is_split_not_dropped():
+    sofa_line = Primitive("line", ((5, 5), (11, 5), (11, 8), (5, 8)), "furni", None, None,
+                          "sofa", "LWPOLYLINE", True)
+    mixed = SymbolInstance("furniture-a", "furniture", (15, 20), 30., 3., source_ids=("sofa", "t0"),
+                           evidence="layer-and-geometry")          # wall line t0 + a sofa
+    consumed = SymbolInstance("furniture-b", "furniture", (15, 0), 30., 0., source_ids=("b0",),
+                              evidence="layer-and-geometry")       # nothing but a wall line
+    untouched = SymbolInstance("door-c", "door", (2, 2), 3., .2, source_ids=("d",), evidence="block-metadata")
+    kept, issues = reconcile_symbols((mixed, consumed, untouched), house(), source((sofa_line,)),
+                                     CLASSIFICATION, 1.0)
+    assert kept[0] == untouched
+    assert [(s.kind, s.source_ids, s.evidence) for s in kept[1:]] == [
+        ("furniture", ("sofa",), "layer-and-geometry")]
+    assert kept[1].width_ft == pytest.approx(6.0)
+    assert {(i.entity, i.code) for i in issues} == {("furniture-a", "symbol_split_by_wall"),
+                                                   ("furniture-b", "symbol_superseded_by_wall")}
