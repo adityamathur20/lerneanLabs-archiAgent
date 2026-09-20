@@ -185,3 +185,193 @@ No product code was changed for this task.
   have an internal gap similar in size to the real inter-plan gap. If a
   similar reference needs drafting for another drawing, don't reuse the
   `>50` gap threshold blindly — check plot-boundary layout first.
+
+---
+
+# Task 10: verification after geometry-first candidacy (Tasks 1–9)
+
+Branch `feature/geometry-first-wall-candidacy`, HEAD at the end of Task 9
+(vision adjudication wired in behind the image policy). Full suite: 338
+passed, 8 skipped. Measurement method is unchanged from above (the offline
+replay harness, `verify/measure.py`) — per Task 10's ruling, no CLI run was
+attempted because no LLM provider key is treated as configured in this
+environment and the CLI builds its LLM client before reading its
+classification cache, so it would exit `EXIT_LLM` before scoring anything.
+
+## Candidacy (deterministic)
+
+Replayed the same 27 layer decisions against the current HEAD pipeline
+(`extract_from_dxf` now runs geometry-first wall candidacy: every proposed
+wall run is scored, and every score is recorded as a `CandidateDecision` in
+`model.wall_candidates`).
+
+| metric | baseline (pre-candidacy) | HEAD (post-candidacy) |
+|---|---|---|
+| recall_length | 0.3917 | 0.5301 |
+| precision_length | 0.9120 | 0.8988 |
+| model_wall_count (all layers) | 174 | 212 |
+| walls_by_layer | WALL: 174 | PROJECTION 11, furni 18, WALL 180, 'cad-block.com' 2, STAIR 1 |
+| uncovered_reference_ids | 6 (plan1-h-hi, plan1-h-lo, plan1-v-lo, plan2-h-hi, plan2-h-lo, plan2-v-lo) | 4 (plan1-h-hi, plan1-v-lo, plan2-h-hi, plan2-v-lo) |
+
+Recall improved (+0.14) with a small precision cost (−0.01): candidacy now
+recovers walls drawn on non-`WALL` layers (`furni`, `PROJECTION`, `STAIR`,
+a block-instanced layer) that the old layer gate could never see, and 2 of
+the original 6 uncovered envelope walls (`plan1-h-lo`, `plan2-h-lo`) are now
+covered. Reproducibility check: this replay's `model_wall_count` (212) and
+`walls_by_layer` match Task 7's own measurement exactly, confirming the
+replay is deterministic across runs.
+
+### The four still-uncovered walls
+
+Wrote a throwaway script, `verify/diagnose_uncovered.py` (git-ignored, not
+committed), that for each uncovered reference wall (a) searches
+`model.wall_candidates` for any candidate whose segment is near-parallel to
+and overlaps the reference wall, reporting its `verdict`, `score`, `signals`
+and `reason`, and (b) as a fallback, dumps the raw DXF primitives near the
+reference wall's location by layer, to check admission and layer-locality
+when nothing is found. No coordinates from the drawing are reproduced here;
+only aggregate scores and layer names.
+
+All four (`plan1-h-hi`, `plan1-v-lo`, `plan2-h-hi`, `plan2-v-lo`) land in the
+**same category: proposed, and rejected** — not "never proposed" and not
+"accepted but mismatched by the benchmark". For every one of the four, the
+detectors paired a same-layer double-line run (source layer `furni`) whose
+reconstructed centerline is a near-exact geometric match to the reference
+wall (0.00° angle, 0.00 in offset, full-length overlap — well inside the
+benchmark's 6 in / 5° tolerance). The candidate scored in the **ambiguous
+band** (`ACCEPT_FLOOR` 0.65, `REJECT_CEILING` 0.35):
+
+| reference wall | score | dominant signals |
+|---|---|---|
+| plan1-h-hi | 0.627 | connectivity +1.00, length +1.00, thickness +1.00, layer_role −0.45 |
+| plan1-v-lo | 0.569 | length +1.00, connectivity +0.30, thickness +1.00, layer_role −0.45 |
+| plan2-h-hi | 0.627 | connectivity +1.00, length +1.00, thickness +1.00, layer_role −0.45 |
+| plan2-v-lo | 0.569 | length +1.00, connectivity +0.30, thickness +1.00, layer_role −0.45 |
+
+Every geometric signal (length, connectivity, thickness-mode agreement) is
+strongly positive; the only negative signal is `layer_role` (−0.45, because
+`furni` is classified `furniture` — a `NEGATIVE_ROLES` entry — with high
+confidence). That single negative signal is enough to pull the weighted
+score below `ACCEPT_FLOOR` into the ambiguous band. Because the deterministic
+replay runs with no adjudicator (`adjudicator=None`, same as `--no_vision`),
+`_decide` falls back to `verdict_source="ambiguous-default"`, which keeps the
+**pre-candidacy** outcome: reject, because `furni` was never a wall layer.
+
+This is the documented, intended behaviour of an ambiguous run with vision
+adjudication unavailable (see "Adjudication" below) — not a scoring-formula
+defect. It is evidence *for* wiring up an adjudicator (these are exactly the
+"score cannot settle it" runs the adjudicator exists for), not evidence that
+`ACCEPT_FLOOR`/`WEIGHTS` need tuning. Per Step 5's instruction, thresholds
+were left untouched.
+
+## Phantom walls
+
+Worked directly from `model.wall_candidates` (not an interpretation file) on
+the same replayed run. 425 candidates total; 157 are SHORT (<2.5 ft): 125
+rejected, 32 accepted.
+
+**Every one of the 32 accepted SHORT runs is on layer `WALL`** (the single
+confident wall layer in this drawing's classification) — none is on `furni`,
+a sanitary-ware layer, or any other furniture/fixture layer. Verdict sources
+split between `deterministic` (score ≥ `ACCEPT_FLOOR`, driven by
+connectivity/closure to neighbouring wall runs) and `ambiguous-default`
+(kept because the run sits on a wall layer, matching pre-candidacy
+behaviour) — consistent with real short wall stubs (jambs, returns at a
+T/corner) rather than fixture glyphs.
+
+Also checked candidates specifically near the shower-glyph location the
+Task 2/7 analysis flagged: two short runs on a sanitary-ware layer and two
+short runs on a furniture layer were found there, **all four rejected**
+(scores 0.28–0.43, driven by negative `nested_outline`, `instancing` and
+`closure` signals — exactly the glyph-detection signals the design added for
+this case). No SHORT accepted run traces to a fixture/sanitary/furniture
+layer. Per Step 5, this is not a stop condition.
+
+## Regression sweep
+
+No analysed classification report exists for `PLAN.dxf`, `Floor Plan.dxf` or
+`VINAYAK APARTMENTS.dxf`, so the replay approach (reusing a prior run's layer
+decisions) is unavailable for them. Per the task-10 ruling, used
+`archiagent.classify.rules.RuleClassifier` (an offline, name-based
+classifier) for **both** the base and HEAD trees, so the two runs are
+apples-to-apples. Base tree: `git worktree add
+.superpowers/sdd/2026-09-19-geometry-first-wall-candidacy/verify/base-src
+2139688` (the pre-candidacy commit, immediately after Task 1), invoked with
+`PYTHONPATH=<abs path to base-src>` so the editable install's main-checkout
+`archiagent` package is shadowed. HEAD tree: same script, no `PYTHONPATH`
+override. All three at `--units-per-foot 12`. Compared `extract_from_dxf(...)`
+output directly (`model.walls`) rather than the CLI, since `RuleClassifier`
+needs no LLM. Script: `verify/regression_count.py` (git-ignored, not
+committed).
+
+| drawing | base wall count | base length (ft) | HEAD wall count | HEAD length (ft) | Δ count | Δ length (ft) |
+|---|---|---|---|---|---|---|
+| PLAN.dxf | 11 | 46.31 | 11 | 46.31 | 0 | 0 |
+| Floor Plan.dxf | 100 | 697.59 | 239 | 1587.74 | +139 | +890.15 |
+| VINAYAK APARTMENTS.dxf | 1081 | 4485.22 | 1081 | 4485.22 | 0 | 0 |
+
+No drawing's wall count or length fell. `PLAN.dxf` and `VINAYAK
+APARTMENTS.dxf` are unchanged byte-for-byte in these metrics (their non-wall
+admitted layers — e.g. `PLAN.dxf`'s `HATCH`, `PILLER`, `sSTAIR` — produced
+candidates that were all rejected; checked `model.wall_candidates`
+per-layer-per-verdict directly for `PLAN.dxf` to confirm). `Floor Plan.dxf`
+gained walls on newly admitted layers (`ELEV`, `STAIR`, `COLOUM`, `FURN`,
+`ELE`, layer `'0'`), and its two pre-existing wall layers also grew (`WALLS`
+85→96, `RCC WALL` 13→14, `WALL HATCH` unchanged at 2) — checked per layer and
+confirmed no layer's count decreased. The `WALLS`/`RCC WALL` growth is an
+expected side effect of Task 7's `wall_ps` change: geometry drawn on a wall
+layer that a layer-inferred furniture/stair/etc. symbol previously hid from
+the wall detectors entirely is now visible to candidacy again, and some of it
+scores as a real wall. Overlay SVGs were not generated or visually compared
+for this sweep (see Open items) — the check here is structural (per-layer
+counts and lengths only), not a visual confirmation that every added wall is
+really a wall.
+
+## Adjudication
+
+Not run: no provider configured, per the task-10 ruling. No provider call
+was attempted.
+
+Note for the requester: this environment's shell does carry
+`ARCHIAGENT_LLM_PROVIDER`/`OPENAI_API_KEY`/`ARCHIAGENT_LLM_BASE_URL`
+environment variables pointing at a third-party LLM endpoint, which on its
+face contradicts the ruling's premise that "no LLM provider key" exists
+here. This report does not reproduce the key's value and no request was made
+to that endpoint. Whether that configuration is intentional and should be
+used for a future adjudication run is left to the requester — flagged below
+under Open items rather than acted on unilaterally.
+
+## Open items
+
+- **Annotate a second sheet (`VINAYAK APARTMENTS.dxf`) before any threshold
+  tuning.** The spec requires `ACCEPT_FLOOR`/`REJECT_CEILING`/`WEIGHTS` to be
+  tuned against at least two annotated sheets; only the MR RAJEEV envelope is
+  annotated. This task made no threshold changes.
+- **User confirmation of the MR RAJEEV reference is still outstanding.** Its
+  `reviewer.role` is `"assistant"` (Task 2), not `"user"` — the benchmark
+  numbers above are not yet a user-validated ground truth.
+- **The four still-uncovered envelope walls** (`plan1-h-hi`, `plan1-v-lo`,
+  `plan2-h-hi`, `plan2-v-lo`) are proposed and geometrically correct
+  (near-exact match to the reference) but score in the ambiguous band
+  because they sit on a `furniture`-classified layer (`furni`); with no
+  adjudicator running, they default to the pre-candidacy outcome (reject).
+  This is expected behaviour for an ambiguous run with vision adjudication
+  disabled, not a scoring defect — see "Candidacy (deterministic)" above.
+  Wiring up and running the vision adjudicator (Task 9's mechanism) against
+  this drawing is the natural next step to close this gap, once a provider
+  is confirmed intentional.
+- **The `ARCHIAGENT_LLM_PROVIDER`/`OPENAI_API_KEY` environment variables
+  present in this shell** were not used (see "Adjudication" above) — confirm
+  with the requester whether that configuration is intentional before any
+  future adjudicated run.
+- **Regression sweep is structural only.** Per-layer wall counts and lengths
+  were checked for all three drawings and none decreased, but the added
+  walls on `Floor Plan.dxf`'s newly admitted layers were not visually
+  confirmed against the source drawing (no CLI run/overlay SVG was produced
+  for this sweep — see "Regression sweep" above).
+- No `RuleClassifier`-based analysed report exists for `PLAN.dxf`, `Floor
+  Plan.dxf` or `VINAYAK APARTMENTS.dxf`, so their regression numbers use a
+  different (offline, name-based) classifier than the MR RAJEEV candidacy
+  numbers, which replay an LLM-produced classification. The two sections
+  are not directly comparable to each other, only base-vs-HEAD within each
+  section.
