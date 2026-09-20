@@ -100,3 +100,44 @@ def render_for_escalation(dxf_path: str | Path, layers: Sequence[str],
         except Exception:                          # noqa: BLE001 - one bad layer is not fatal
             continue
     return ref, out
+
+
+def render_candidate(ps, wall, units_per_foot: float, margin_ft: float = 12.0,
+                     size_inches: tuple[float, float] = (6.0, 6.0), dpi: int = 120) -> bytes:
+    """PNG bytes of one wall candidate (red) within its surrounding geometry (grey).
+
+    Rendered in memory and never written to disk: it is a picture of a client drawing.
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception as exc:                       # noqa: BLE001 - reported, not raised
+        raise RenderUnavailable(RENDER_UNAVAILABLE_MSG) from exc
+    import io
+
+    run_x, run_y = (wall.start[0], wall.end[0]), (wall.start[1], wall.end[1])
+    x0, x1 = min(run_x) - margin_ft, max(run_x) + margin_ft
+    y0, y1 = min(run_y) - margin_ft, max(run_y) + margin_ft
+    own = set(wall.source_ids)
+    fig, ax = plt.subplots(figsize=size_inches, dpi=dpi)
+    try:
+        for p in ps.primitives:
+            pts = [(x / units_per_foot, y / units_per_foot) for x, y in p.coords]
+            if p.closed:
+                pts.append(pts[0])
+            px, py = zip(*pts)
+            if max(px) < x0 or min(px) > x1 or max(py) < y0 or min(py) > y1:
+                continue
+            mine = p.source_id in own
+            ax.plot(px, py, color="#d62728" if mine else "#8c8c8c", linewidth=1.8 if mine else 0.5)
+        ax.plot(run_x, run_y, color="#d62728", linewidth=4, alpha=0.45, solid_capstyle="butt")
+        ax.set_xlim(x0, x1)
+        ax.set_ylim(y0, y1)
+        ax.set_aspect("equal")
+        ax.axis("off")
+        buffer = io.BytesIO()
+        fig.savefig(buffer, format="png", facecolor="white", bbox_inches="tight")
+        return buffer.getvalue()
+    finally:
+        plt.close(fig)
