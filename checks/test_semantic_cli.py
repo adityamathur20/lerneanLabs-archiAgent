@@ -146,3 +146,36 @@ def test_only_reviewed_plan_regions_are_authored(stub_pipeline, tmp_path, capsys
     assert cli.main(args(tmp_path, "--regions-file", str(path))) == cli.EXIT_PIPELINE
     assert "kind='plan'" in capsys.readouterr().err
     assert not stub_pipeline
+
+
+def parsed(*extra):
+    return cli._parser().parse_args(["--dxfFilePath", "fixture.dxf", "--outputDir", "out", *extra])
+
+
+def test_wall_adjudication_is_on_by_default_for_llm_runs(monkeypatch):
+    from archiagent.classify.wall_adjudicator import WallAdjudicator
+    monkeypatch.delenv("ARCHIAGENT_VISION", raising=False)
+    monkeypatch.setattr(cli, "build_client", lambda cfg: "client")
+    assert isinstance(cli._wall_adjudicator(parsed()), WallAdjudicator)
+
+
+@pytest.mark.parametrize("extra", [("--no-wall-adjudication",), ("--no_vision",), ("--rules",),
+                                   ("--walls", "WALL")])
+def test_wall_adjudication_is_off_when_images_must_not_be_sent_or_no_llm_runs(monkeypatch, extra):
+    monkeypatch.setattr(cli, "build_client", lambda cfg: pytest.fail("no client may be built"))
+    assert cli._wall_adjudicator(parsed(*extra)) is None
+
+
+def test_the_vision_environment_switch_also_disables_wall_adjudication(monkeypatch):
+    monkeypatch.setenv("ARCHIAGENT_VISION", "0")
+    monkeypatch.setattr(cli, "build_client", lambda cfg: pytest.fail("no client may be built"))
+    assert cli._wall_adjudicator(parsed()) is None
+
+
+def test_the_dxf_run_hands_the_adjudicator_to_extraction(stub_pipeline, monkeypatch, tmp_path):
+    seen = []
+    monkeypatch.setattr(cli, "_wall_adjudicator", lambda parsed_args: "adjudicator")
+    monkeypatch.setattr(cli, "extract_from_dxf",
+                        lambda *a, **kw: seen.append(kw.get("adjudicator")) or minimal_model())
+    assert cli.main(args(tmp_path)) == cli.EXIT_OK
+    assert seen == ["adjudicator"]

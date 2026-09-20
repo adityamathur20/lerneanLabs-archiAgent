@@ -114,6 +114,11 @@ def _parser() -> argparse.ArgumentParser:
                         "LLM provider by default -- ARCHIAGENT_VISION=0 "
                         "has the same effect as this flag, but this flag "
                         "wins if both are given.")
+    p.add_argument("--no-wall-adjudication", action="store_true",
+                   help="DXF only: never send rendered images of uncertain wall "
+                        "candidates to the LLM provider; uncertain candidates keep "
+                        "the outcome they had before geometry-first candidacy. "
+                        "--no_vision (or ARCHIAGENT_VISION=0) also turns this off.")
     p.add_argument("--max-tokens", type=int, default=None,
                    metavar="N",
                    help="cap on the model's reply length (default %d, or "
@@ -284,6 +289,16 @@ def _dxf_classifier(args, dxf_path: str, on_issue=None) -> LayerClassifier:
                                on_issue=on_issue)
     return CachingClassifier(inner, model=cfg.model, provider=cfg.provider,
                              base_url=cfg.base_url, enabled=not args.no_cache)
+
+
+def _wall_adjudicator(args):
+    """Vision review of uncertain wall candidates, or None when images must not be sent."""
+    if (args.no_wall_adjudication or args.rules or args.walls
+            or not _vision_enabled(args.no_vision)):
+        return None
+    from archiagent.classify.wall_adjudicator import WallAdjudicator
+    cfg = config_from_env(provider=args.provider, model=args.model, timeout=args.timeout)
+    return WallAdjudicator(build_client(cfg), max_tokens=_max_tokens(args))
 
 
 class _PrecomputedClassifier:
@@ -573,11 +588,13 @@ def main(argv: list[str] | None = None) -> int:
     # no side-channel for issues raised during classification.
     classifier_issues: list[Issue] = []
     classifier: LayerClassifier | None = None
+    adjudicator = None
     if not (args.inspect or args.list_regions):
         try:
             classifier = (_dxf_classifier(args, input_path,
                                           on_issue=classifier_issues.append)
                          if is_dxf else _classifier(args))
+            adjudicator = _wall_adjudicator(args) if is_dxf else None
         except LLMUnavailable as e:
             print(f"error: {e}", file=sys.stderr)
             return EXIT_LLM
@@ -670,7 +687,8 @@ def main(argv: list[str] | None = None) -> int:
             review = review_all.get("regions",{}).get(region.id,{}) if region and "regions" in review_all else review_all
             kwargs = dict(wall_height_ft=args.height,region=region,measurements=measurements,review=review)
             if is_dxf:
-                model = extract_from_dxf(source,selected_classifier,units_per_foot=selected_scale,**kwargs)
+                model = extract_from_dxf(source,selected_classifier,units_per_foot=selected_scale,
+                                         adjudicator=adjudicator,**kwargs)
             else:
                 model = extract_from_primitives(source,selected_classifier,units_per_foot=selected_scale,stats=region_stats,**kwargs)
             if region is None:
