@@ -23,6 +23,9 @@ class Part:
     center: tuple[float, float]
     length: float
     points: tuple
+    # Retained so a harvester can rebuild a template's rings; the signature
+    # already folds in their vertex counts.
+    holes: tuple = ()
 
 
 def parts_from(ps, units_per_foot) -> tuple[Part, ...]:
@@ -50,7 +53,7 @@ def parts_from(ps, units_per_foot) -> tuple[Part, ...]:
         signature = (category, len(coords)-1, tuple(sorted(len(ring) for ring in holes)))
         center = (geometry.centroid.x, geometry.centroid.y)
         out.append(Part(i, p.source_id, p.layer, geometry, signature, center,
-                        geometry.length, coords))
+                        geometry.length, coords, holes))
     return tuple(sorted(out, key=lambda p: (p.source_id, p.layer, p.points, p.index)))
 
 

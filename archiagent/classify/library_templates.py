@@ -11,7 +11,9 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 import hashlib
+import json
 import math
+from pathlib import Path
 
 from shapely import affinity
 from shapely.geometry import LineString, MultiLineString, Point
@@ -27,6 +29,32 @@ from archiagent.semantic import SymbolInstance
 TOLERANCE_FRACTION = 0.03
 MAX_MATCH_OPERATIONS = 200_000
 CATEGORIES = {"fill", "curve", "closed", "path"}
+DEFAULT_LIBRARY = Path(__file__).resolve().parents[1] / "data" / "symbol_library.json"
+
+
+def load_library(path=None) -> tuple[dict, ...]:
+    """Read reviewed templates, validating each so bad data fails at load.
+
+    An explicitly supplied path that does not exist is a configuration mistake
+    and raises. A missing bundled library only means nothing has been harvested
+    yet, so it yields no templates and lets the run continue.
+    """
+    source = Path(path) if path else DEFAULT_LIBRARY
+    if not source.is_file():
+        if path:
+            raise FileNotFoundError(f"symbol library not found: {source}")
+        return ()
+    try:
+        data = json.loads(source.read_text())
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"symbol library {source} is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("templates", []), list):
+        raise ValueError(f"symbol library {source} must hold a templates list")
+    reviewed = [t for t in data.get("templates", []) if isinstance(t, dict)
+                and t.get("status") == "reviewed"]
+    for record in reviewed:
+        _validated(record)
+    return tuple(reviewed)
 
 
 @dataclass(frozen=True)

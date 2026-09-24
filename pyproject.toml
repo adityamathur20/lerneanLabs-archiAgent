@@ -28,6 +28,7 @@ include = ["archiagent*"]
 
 [tool.setuptools.package-data]
 "archiagent.ingest" = ["*.swift"]
+"archiagent" = ["data/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "checks"]

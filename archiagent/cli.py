@@ -59,6 +59,7 @@ from archiagent.ingest.pdf_vector import NoLayersError, load_pdf
 from archiagent.llm.client import LLMSchemaError, LLMUnavailable
 from archiagent.llm.config import build_client, config_from_env
 from archiagent.model import Issue
+from archiagent.classify.library_templates import load_library
 from archiagent.pipeline import extract_from_dxf, extract_from_primitives
 from archiagent.scale.resolve import ScaleGateError
 from archiagent.validate import validate
@@ -153,6 +154,9 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--reference-file", help="source-bound reference annotations for scoring one selected plan")
     p.add_argument("--workbench", action="store_true", help="write an offline HTML source annotation workbench per plan")
     p.add_argument("--ocr", action="store_true", help="explicitly run local macOS Vision OCR on vector outlines (requires cv extra)")
+    p.add_argument("--symbol-library", metavar="PATH", help="reviewed symbol library JSON; replaces the bundled library for this run")
+    p.add_argument("--no-symbol-library", action="store_true", help="skip library symbol matching entirely")
+    p.add_argument("--harvest-symbols", action="store_true", help="propose library candidates from this drawing's blocks and exit; writes candidates and previews under the cache directory")
     p.add_argument("--require-accepted", action="store_true", help="write review report but refuse IFC when acceptance errors remain")
     p.add_argument("--freeze-only", action="store_true", help="save interpretation, review and overlays without authoring IFC")
     p.add_argument("--replay-manifest", metavar="PATH", help="rebuild from a frozen interpretation after checking the input checksum; no recognition, OCR or provider calls")
@@ -618,6 +622,28 @@ def main(argv: list[str] | None = None) -> int:
             proposals = propose_regions(ps, units_per_foot if is_dxf else args.units_per_foot)
             print(json.dumps([asdict(r) for r in proposals], indent=2))
             return EXIT_OK
+
+        if args.harvest_symbols:
+            from archiagent.classify.symbol_harvest import harvest, merge, write_preview
+            if not is_dxf:
+                raise ValueError("symbol harvesting reads block definitions; supply a DXF")
+            cache = Path(input_path).parent / ".archiagent-cache" / "symbols"
+            store = cache / "candidates.json"
+            existing = tuple(json.loads(store.read_text())) if store.is_file() else ()
+            candidates = merge(existing, harvest(ps, units_per_foot))
+            cache.mkdir(parents=True, exist_ok=True)
+            store.write_text(json.dumps(candidates, indent=2))
+            previews = sum(write_preview(c, cache / f"{c['id']}.png") is not None
+                           for c in candidates)
+            print(f"{len(candidates)} candidates -> {store}"
+                  + (f"; {previews} previews" if previews else
+                     "; previews need the vision extra (matplotlib)"))
+            for c in candidates:
+                size = c["size_ft"]
+                print(f"  {c['id']:28s} {c['found_by']:9s} parts={len(c['geometry']):3d} "
+                      f"instances={sum(p['instances'] for p in c['provenance']):3d} "
+                      f"size={size['min']}-{size['max']}ft")
+            return EXIT_OK
         if args.inspect:
             _print_inventory(stats)
             return EXIT_OK
@@ -666,6 +692,13 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("--reference-file scores one selected plan; run each region independently")
         review_all = _review_document(args.review_file, ps.source_sha256,
                                       [r.id for r in regions if r is not None])
+        # An explicitly named library that cannot be read is a configuration
+        # mistake; an empty bundled one only means nothing is harvested yet.
+        symbol_library = () if args.no_symbol_library else _configuration(
+            lambda: load_library(args.symbol_library), "symbol library")
+        if is_dxf and not args.no_symbol_library and not symbol_library:
+            classifier_issues.append(Issue("info", "symbols", "symbol_library_empty",
+                                           "no reviewed symbol templates; run --harvest-symbols to propose some"))
         models=[];sources=[]
         for plan_index, region in enumerate(regions, 1):
             source = select_region(ps,region) if region else ps
@@ -688,7 +721,7 @@ def main(argv: list[str] | None = None) -> int:
             kwargs = dict(wall_height_ft=args.height,region=region,measurements=measurements,review=review)
             if is_dxf:
                 model = extract_from_dxf(source,selected_classifier,units_per_foot=selected_scale,
-                                         adjudicator=adjudicator,**kwargs)
+                                         adjudicator=adjudicator,symbol_library=symbol_library,**kwargs)
             else:
                 model = extract_from_primitives(source,selected_classifier,units_per_foot=selected_scale,stats=region_stats,**kwargs)
             if region is None:

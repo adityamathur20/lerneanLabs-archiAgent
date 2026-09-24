@@ -187,8 +187,20 @@ bounded by centroid proximity, is the discriminator.
 
 ## 4. Harvesting
 
-`archiagent symbols harvest <dxf> …`, `approve`, `reject`. Two detection paths,
-both producing candidates for human review; neither approves anything.
+`archiagent` is a single flat argparse parser with no subcommands, and mode
+flags (`--list-regions`, `--inspect`, `--classify-only`) are its idiom, so
+harvesting is `--harvest-symbols` rather than the `symbols harvest` subcommand
+this spec first assumed. Introducing subparsers into an 800-line flat CLI to
+gain a verb is not worth it.
+
+Approval is likewise a file edit, not a command: `--harvest-symbols` writes
+candidates and previews, a reviewer moves the ones worth keeping into
+`symbol_library.json` and sets `status: "reviewed"`, `kind`, `subtype`, `label`
+and `mirror_allowed`. Candidate-id tracking and approve/reject commands wait
+until a real workflow needs them.
+
+Two detection paths, both producing candidates for human review; neither
+approves anything.
 
 1. **Keyword path.** INSERTs whose block name resolves to a known role. Precise
    where names are informative.
@@ -199,9 +211,14 @@ both producing candidates for human review; neither approves anything.
    which the keyword path cannot see.
 
 Both write a candidate record plus a preview PNG under `.archiagent-cache/symbols/`
-— never the repo, since previews render client drawings. `approve` moves a
-candidate into the library with `status: "reviewed"`; the reviewer supplies
-kind, subtype, label, size range and `mirror_allowed`.
+— never the repo, since previews render client drawings. Previews need the
+optional `vision` extra; without it harvesting still writes candidates.
+
+The `Role.PLUMBING` keyword expansion the superseded spec proposed is **not**
+included. `named_role` also classifies layers in `RuleClassifier` and in
+`recognize_symbols`' layer fallback, so widening its tokens changes wall and
+symbol classification well beyond harvesting. The frequency path already reaches
+the shapes that expansion was meant to catch, so the risk buys nothing here.
 
 Harvesting reads block definitions only. Discovering candidates from loose-line
 clusters, where nothing delimits one symbol from the next, remains deferred.
@@ -283,7 +300,24 @@ Verified against real drawings, not only unit fixtures.
   two distinct real sizes, 1.373 ft and 1.805 ft, and included mirrored
   instances — scale and mirror tolerance confirmed on hand-drafted geometry.
 
-Recall is 83% on that pair and precision is 100%. That balance is the intended
+- **Harvesting.** `--harvest-symbols` on `SANJANA SURESH JI.dxf` proposed 7
+  candidates: 2 by name (`Toilet - top` → plumbing, `car1` → vehicle) and 5 by
+  frequency alone, including a 40-instance glyph named `Chaukhat` — Hindi for
+  door frame, which no English keyword list reaches. The frequency path earns
+  its place on the first drawing tried.
+- **Pipeline.** Approving the toilet template and running the full pipeline
+  produced 6 `evidence="symbol-library"` plumbing symbols, with wall count,
+  symbol count and error count all identical to the same run with
+  `--no-symbol-library`. On this drawing the name-based recogniser already found
+  those toilets, so the library changed provenance and nothing else — which is
+  the correct no-regression result.
+- **A mislabelled template fails loudly.** Approving the `Chaukhat` frame as
+  `kind="door"` added 25 `unhosted_opening_symbol` errors, because door symbols
+  are expected to host onto walls. The pipeline rejected the bad label rather
+  than quietly building from it, which is the intended behaviour of the
+  "library quality depends on review" risk below.
+
+Recall is 83% on that cross-drawing pair and precision is 100%. That balance is the intended
 one: an unmatched fixture falls through to the candidacy rejection signals,
 while a false match would remove real geometry from wall detection. The 12
 misses are not yet attributed; rotations outside the default four are the first

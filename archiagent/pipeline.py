@@ -22,7 +22,7 @@ from archiagent.validate import validate
 
 
 def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
-              measurements=(), review=None, adjudicator=None):
+              measurements=(), review=None, adjudicator=None, symbol_library=()):
     import math
     from archiagent.classify.layers import candidate_layers
     from archiagent.geometry.candidacy import reconcile_symbols, select_walls, yields_to_walls
@@ -43,6 +43,15 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
     if not wall_layers and not review.get("wall_profiles"):
         _no_wall_layers(classification)
     symbols = recognize_symbols(ps, scale.units_per_foot, classification)
+    library_issues = ()
+    if symbol_library:
+        # Before the reviewed-template block, so that block's claimed-id filter
+        # lets a reviewed decision about this drawing override a library shape.
+        from archiagent.classify.library_templates import match_library_templates
+        library_symbols, library_issues = match_library_templates(
+            ps, scale.units_per_foot, symbol_library)
+        claimed = {sid for s in library_symbols for sid in s.source_ids}
+        symbols = tuple(s for s in symbols if not claimed.intersection(s.source_ids)) + library_symbols
     if review.get("templates"):
         from archiagent.classify.templates import match_templates
         records = review["templates"]
@@ -193,7 +202,7 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
     if ps.declared_units_per_foot and not math.isclose(ps.declared_units_per_foot,scale.units_per_foot):
         ingest_issues += (Issue("warn","scale","declared_units_overridden",
                                f"header={ps.declared_units_per_foot} units/ft, using {scale.units_per_foot}; dimension checks determine acceptance"),)
-    return replace(model, issues=validate(model)+ingest_issues+geometry_issues+candidacy_issues+superseded)
+    return replace(model, issues=validate(model)+ingest_issues+geometry_issues+candidacy_issues+superseded+library_issues)
 
 
 def extract_from_primitives(ps: PrimitiveSet, classifier: LayerClassifier,
@@ -216,10 +225,12 @@ def extract_from_primitives(ps: PrimitiveSet, classifier: LayerClassifier,
 
 def extract_from_dxf(ps: PrimitiveSet, classifier: LayerClassifier, *,
                      units_per_foot: float, wall_height_ft: float = 10.0,
-                     region=None, measurements=(), review=None, adjudicator=None) -> BuildingModel:
+                     region=None, measurements=(), review=None, adjudicator=None,
+                     symbol_library=()) -> BuildingModel:
     scale = ScaleResult(units_per_foot,"source-units-unverified",(),0.0,0)
     return _assemble(ps,classifier.classify(build_inventory(ps)),scale,wall_height_ft,
-                     region=region,measurements=measurements,review=review,adjudicator=adjudicator)
+                     region=region,measurements=measurements,review=review,adjudicator=adjudicator,
+                     symbol_library=symbol_library)
 
 
 def extract(pdf_path: str | Path, classifier: LayerClassifier, page: int = 0,
