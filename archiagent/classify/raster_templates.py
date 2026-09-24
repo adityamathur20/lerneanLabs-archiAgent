@@ -17,7 +17,8 @@ from shapely import affinity
 from shapely.ops import unary_union
 from shapely.strtree import STRtree
 
-from archiagent.classify.templates import _parts, _seed_ids, _symbol, KINDS
+from archiagent.classify.shapes import parts_from
+from archiagent.classify.templates import _seed_ids, _symbol, KINDS
 
 MAX_IMAGE_PIXELS = 20_000_000
 MAX_RESPONSE_PIXELS = 80_000_000
@@ -102,7 +103,7 @@ def match_raster_templates(ps,units_per_foot,records):
         raise ValueError("raster template units_per_foot must be finite and positive")
     if len(records)>32 or len({str(r.get('id','')) for r in records})!=len(records):
         raise ValueError("at most 32 uniquely named raster templates are supported")
-    parts=_parts(ps,units_per_foot)
+    parts=parts_from(ps,units_per_foot)
     if len(parts)>MAX_SOURCE_PARTS:
         raise ValueError("raster template source exceeds 200000 paths; crop the drawing region")
     counts=Counter(p.source_id for p in ps.primitives if p.source_id)

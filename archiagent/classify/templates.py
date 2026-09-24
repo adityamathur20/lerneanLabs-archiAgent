@@ -9,57 +9,20 @@ from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
 from collections import Counter
-from dataclasses import dataclass, replace
+from dataclasses import replace
 import hashlib
 import math
 
 from shapely import affinity
-from shapely.geometry import LineString, MultiLineString, MultiPoint, Point
+from shapely.geometry import Point
 from shapely.strtree import STRtree
 
+from archiagent.classify.shapes import measure, parts_from
 from archiagent.semantic import SymbolInstance
 
-KINDS = {"door","window","column","beam","stair","furniture","electrical","plumbing","vehicle"}
+KINDS = {"door","window","column","beam","stair","furniture","electrical","plumbing","vehicle","vegetation"}
 MAX_SEED_PRIMITIVES = 64
 MAX_MATCH_OPERATIONS = 200_000
-
-
-@dataclass(frozen=True)
-class _Part:
-    index: int
-    source_id: str
-    layer: str
-    geometry: object
-    signature: tuple
-    center: tuple[float,float]
-    length: float
-    points: tuple
-
-
-def _parts(ps, units_per_foot):
-    entities = {e.id:e for e in ps.entities}
-    out = []
-    for i,p in enumerate(ps.primitives):
-        if not p.source_id or len(p.coords)<2:
-            continue
-        e = entities.get(p.source_id)
-        if e is not None and dict(e.metadata).get("region_partial")=="true":
-            continue
-        coords = tuple((x/units_per_foot,y/units_per_foot) for x,y in p.coords)
-        if not all(math.isfinite(v) for point in coords for v in point):
-            raise ValueError("template source coordinates must be finite")
-        closed = p.closed or p.kind in {"rect","fill"} or coords[0]==coords[-1]
-        if closed and coords[0]!=coords[-1]:
-            coords += coords[:1]
-        if len(set(coords))<2:
-            continue
-        holes = tuple(tuple((x/units_per_foot,y/units_per_foot) for x,y in ring) for ring in (e.holes if e else ()))
-        geometry = MultiLineString((coords,*holes)) if holes else LineString(coords)
-        category = "fill" if p.kind=="fill" else "curve" if p.kind=="curve" else "closed" if closed else "path"
-        signature = (category,len(coords)-1,tuple(sorted(len(ring) for ring in holes)))
-        center = (geometry.centroid.x,geometry.centroid.y)
-        out.append(_Part(i,p.source_id,p.layer,geometry,signature,center,geometry.length,coords))
-    return tuple(sorted(out,key=lambda p:(p.source_id,p.layer,p.points,p.index)))
 
 
 def _seed_ids(ps, ids):
@@ -83,30 +46,17 @@ def _seed_ids(ps, ids):
 
 def _symbol(record, parts, angle, tolerance_in):
     ids = tuple(sorted({p.source_id for p in parts}))
-    points = [point for p in parts for point in p.points]
-    rect = MultiPoint(points).minimum_rotated_rectangle
-    if rect.geom_type=="Polygon":
-        corners = list(rect.exterior.coords)
-        sides = [(math.dist(a,b),a,b) for a,b in zip(corners,corners[1:])]
-        width,a,b = max(sides)
-        depth = min(s[0] for s in sides)
-        orientation = math.atan2(b[1]-a[1],b[0]-a[0])%math.pi
-        boundary = tuple(corners)
-        # A single closed column outline supplies its real outline directly.
-        if record["kind"]=="column" and len(parts)==1 and parts[0].signature[0] in {"closed","fill"}:
-            boundary = parts[0].points
-    elif rect.geom_type=="LineString":
-        a,b = sorted((tuple(rect.coords[0]),tuple(rect.coords[-1])))
-        width = math.dist(a,b)
-        depth = 0.0
-        orientation = math.atan2(b[1]-a[1],b[0]-a[0])%math.pi
-        boundary = (a,b)
-    else:
+    measured = measure(parts)
+    if measured is None:
         return None
+    position,width,depth,orientation,boundary = measured
+    # A single closed column outline supplies its real outline directly.
+    if record["kind"]=="column" and len(parts)==1 and parts[0].signature[0] in {"closed","fill"}:
+        boundary = parts[0].points
     if record["kind"] in {"column","beam"} and depth<=0:
         return None
     digest = hashlib.sha256((str(record["id"])+"|"+"|".join(ids)).encode()).hexdigest()[:16]
-    return SymbolInstance("template-"+digest,record["kind"],(rect.centroid.x,rect.centroid.y),
+    return SymbolInstance("template-"+digest,record["kind"],position,
                           width,depth,orientation,record.get("subtype","unknown"),ids,
                           "reviewed-template",.8,boundary,
                           properties=(("template_id",str(record["id"])),
@@ -131,7 +81,7 @@ def match_templates(ps, units_per_foot, records) -> tuple[SymbolInstance,...]:
         raise ValueError("at most 100 reviewed templates are supported per region")
     if len({str(r.get("id","")) for r in records})!=len(records):
         raise ValueError("template IDs must be unique")
-    parts = _parts(ps,units_per_foot)
+    parts = parts_from(ps,units_per_foot)
     source_counts = Counter(p.source_id for p in ps.primitives if p.source_id)
     results = {}
     operations = 0
