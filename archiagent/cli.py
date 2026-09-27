@@ -37,6 +37,7 @@ import shlex
 import shutil
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 from archiagent.classify.cache import CachingClassifier
@@ -516,7 +517,15 @@ def _replay(args, input_path, out_path):
 
 
 #: Staging directories for converted DWGs, removed by `main` on the way out.
-_TEMP_DIRS: list[str] = []
+#: Thread-local, so two concurrent `main()` calls in one process cannot delete
+#: each other's directories.
+_STAGING = threading.local()
+
+
+def _staging_dirs() -> list[str]:
+    if not hasattr(_STAGING, "dirs"):
+        _STAGING.dirs = []
+    return _STAGING.dirs
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -524,8 +533,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return _main(argv)
     finally:
-        while _TEMP_DIRS:
-            shutil.rmtree(_TEMP_DIRS.pop(), ignore_errors=True)
+        dirs = _staging_dirs()
+        while dirs:
+            shutil.rmtree(dirs.pop(), ignore_errors=True)
 
 
 def _main(argv: list[str] | None = None) -> int:
@@ -574,22 +584,19 @@ def _main(argv: list[str] | None = None) -> int:
               "--dwgFilePath", file=sys.stderr)
         return EXIT_USAGE
 
-    if args.dwgFilePath:
-        # A DWG becomes a DXF and then follows the DXF path exactly. The
-        # converted file keeps the source stem, so the output is still named
-        # after the drawing the caller supplied.
-        staging = tempfile.mkdtemp(prefix="archiagent-dwg-")
-        _TEMP_DIRS.append(staging)
-        try:
-            args.dxfFilePath = str(convert_dwg(Path(args.dwgFilePath), Path(staging)))
-        except DwgConversionError as error:
-            print(f"error: {error}", file=sys.stderr)
-            return EXIT_PIPELINE
-
-    is_dxf = bool(args.dxfFilePath)
-    input_path = args.dxfFilePath if is_dxf else args.pdfFilePath
+    # A DWG becomes a DXF and then follows the DXF path exactly. The conversion
+    # happens AFTER the usage checks below, so forgetting --outputDir costs an
+    # error message rather than a full conversion.
+    is_dxf = bool(args.dxfFilePath or args.dwgFilePath)
+    input_path = args.dwgFilePath or args.dxfFilePath or args.pdfFilePath
 
     authoring = not (args.inspect or args.classify_only or args.list_regions)
+
+    if args.dwgFilePath and authoring and not args.outputDir:
+        print("error: --outputDir is required unless --inspect or "
+              "--classify-only is given", file=sys.stderr)
+        return EXIT_USAGE
+
     out_path: Path | None = None
     if authoring:
         if not args.outputDir:
@@ -608,6 +615,25 @@ def _main(argv: list[str] | None = None) -> int:
             print("hint: choose a different --outputDir, or remove the "
                   "existing file first.", file=sys.stderr)
             return EXIT_USAGE
+
+    if args.dwgFilePath:
+        # ODA's DXF output is NOT byte-deterministic, so a manifest whose source
+        # checksum was taken over a throwaway conversion could never be replayed
+        # -- the gate would blame the caller for supplying a different drawing.
+        # Keeping the converted DXF beside the outputs makes replay work, and
+        # makes a bad result debuggable: the caller can re-run with
+        # --dxfFilePath against exactly the file that produced it.
+        destination = Path(args.outputDir) if (authoring and args.outputDir) else None
+        if destination is None:
+            staging = tempfile.mkdtemp(prefix="archiagent-dwg-")
+            _staging_dirs().append(staging)
+            destination = Path(staging)
+        try:
+            input_path = str(convert_dwg(Path(args.dwgFilePath), destination))
+        except DwgConversionError as error:
+            print(f"error: {error}", file=sys.stderr)
+            return EXIT_PIPELINE
+        args.dxfFilePath = input_path
 
     if args.replay_manifest:
         try:

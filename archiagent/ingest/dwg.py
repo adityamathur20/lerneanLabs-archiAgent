@@ -37,6 +37,15 @@ def converter_path() -> Path:
     return Path(os.environ.get("ARCHIAGENT_ODA_CONVERTER", str(ODA_DEFAULT)))
 
 
+def converter_available() -> bool:
+    """Whether DWG conversion can work here at all.
+
+    Callers that accept uploads use this to refuse a DWG up front, rather than
+    queue a job that fails minutes later on a worker with no converter.
+    """
+    return converter_path().exists()
+
+
 def convert_dwg(dwg_path: Path, out_dir: Path, *, timeout_s: int = 300) -> Path:
     """Convert one DWG, returning the path of the DXF written into `out_dir`."""
     dwg_path = Path(dwg_path)
@@ -57,7 +66,7 @@ def convert_dwg(dwg_path: Path, out_dir: Path, *, timeout_s: int = 300) -> Path:
         staging = Path(staging_root)
         shutil.copy2(dwg_path, staging / dwg_path.name)
         try:
-            subprocess.run(
+            completed = subprocess.run(
                 [str(converter), str(staging), str(out_dir),
                  OUTPUT_VERSION, OUTPUT_FORMAT, "0", "1", "*.DWG"],
                 capture_output=True, text=True, timeout=timeout_s, check=False,
@@ -76,5 +85,17 @@ def convert_dwg(dwg_path: Path, out_dir: Path, *, timeout_s: int = 300) -> Path:
         produced.unlink(missing_ok=True)
         raise DwgConversionError(f"ODA could not read {dwg_path.name}: {detail}")
     if not produced.is_file() or produced.stat().st_size == 0:
-        raise DwgConversionError(f"ODA produced no DXF for {dwg_path.name}")
+        # No output AND no .err is the shape a headless worker sees, because
+        # ODA is a GUI bundle that needs a windowing session. Reporting only
+        # "produced no DXF" would blame the drawing for a deployment fault, so
+        # the converter's own output goes into the message.
+        detail = " ".join(
+            part.strip() for part in (completed.stderr, completed.stdout) if part and part.strip()
+        )
+        raise DwgConversionError(
+            f"ODA produced no DXF for {dwg_path.name} (exit {completed.returncode})"
+            + (f": {detail[-800:]}" if detail else
+               ". The converter wrote nothing; it needs a windowing session, "
+               "so this usually means it is running headless.")
+        )
     return produced
