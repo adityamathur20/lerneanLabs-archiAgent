@@ -34,7 +34,9 @@ import math
 from dataclasses import fields, replace
 import os
 import shlex
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 from archiagent.classify.cache import CachingClassifier
@@ -54,6 +56,7 @@ from archiagent.semantic import PlanRegion, SymbolInstance
 from archiagent.scale.verify import load_measurements
 from archiagent.reporting import write_review, record_export_validation
 from archiagent.benchmark import load_reference, evaluate_reference
+from archiagent.ingest.dwg import DwgConversionError, convert_dwg
 from archiagent.ingest.dxf_vector import DxfUnitsError, load_dxf
 from archiagent.ingest.pdf_vector import NoLayersError, load_pdf
 from archiagent.llm.client import LLMSchemaError, LLMUnavailable
@@ -86,6 +89,11 @@ def _parser() -> argparse.ArgumentParser:
                    default=None,
                    help="input floorplan PDF (mutually exclusive with "
                         "--dxfFilePath; exactly one is required)")
+    p.add_argument("--dwgFilePath", dest="dwgFilePath", metavar="PATH",
+                   default=None,
+                   help="input floorplan DWG, converted to DXF with the ODA "
+                        "File Converter (mutually exclusive with "
+                        "--pdfFilePath/--dxfFilePath; exactly one is required)")
     p.add_argument("--dxfFilePath", dest="dxfFilePath", metavar="PATH",
                    default=None,
                    help="input floorplan DXF (mutually exclusive with "
@@ -507,7 +515,20 @@ def _replay(args, input_path, out_path):
     return EXIT_PIPELINE if any(i.code == "scale_gate_failed" for m in models for i in m.issues) else EXIT_OK
 
 
+#: Staging directories for converted DWGs, removed by `main` on the way out.
+_TEMP_DIRS: list[str] = []
+
+
 def main(argv: list[str] | None = None) -> int:
+    """Run the tool, then clean up anything conversion staged."""
+    try:
+        return _main(argv)
+    finally:
+        while _TEMP_DIRS:
+            shutil.rmtree(_TEMP_DIRS.pop(), ignore_errors=True)
+
+
+def _main(argv: list[str] | None = None) -> int:
     parser = _parser()
     argv = sys.argv[1:] if argv is None else argv
     if not argv:
@@ -547,13 +568,25 @@ def main(argv: list[str] | None = None) -> int:
     # get wrong (see the module docstring for the bug this replaced).
     # Neither and both are both EXIT_USAGE, and the message names both
     # options so the user sees the choice either way.
-    have_pdf = bool(args.pdfFilePath)
-    have_dxf = bool(args.dxfFilePath)
-    if have_pdf == have_dxf:
-        print("error: pass exactly one of --pdfFilePath or --dxfFilePath",
-              file=sys.stderr)
+    given = [bool(args.pdfFilePath), bool(args.dxfFilePath), bool(args.dwgFilePath)]
+    if sum(given) != 1:
+        print("error: pass exactly one of --pdfFilePath, --dxfFilePath or "
+              "--dwgFilePath", file=sys.stderr)
         return EXIT_USAGE
-    is_dxf = have_dxf
+
+    if args.dwgFilePath:
+        # A DWG becomes a DXF and then follows the DXF path exactly. The
+        # converted file keeps the source stem, so the output is still named
+        # after the drawing the caller supplied.
+        staging = tempfile.mkdtemp(prefix="archiagent-dwg-")
+        _TEMP_DIRS.append(staging)
+        try:
+            args.dxfFilePath = str(convert_dwg(Path(args.dwgFilePath), Path(staging)))
+        except DwgConversionError as error:
+            print(f"error: {error}", file=sys.stderr)
+            return EXIT_PIPELINE
+
+    is_dxf = bool(args.dxfFilePath)
     input_path = args.dxfFilePath if is_dxf else args.pdfFilePath
 
     authoring = not (args.inspect or args.classify_only or args.list_regions)
