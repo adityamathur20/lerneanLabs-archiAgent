@@ -13,6 +13,11 @@ against it on 2026-09-27 rather than assumed:
 
 `$INSUNITS` in the output is not trusted: `--units-per-foot` stays
 authoritative, exactly as it is for a hand-exported DXF.
+
+Output is deterministic apart from the `$TDUPDATE`/`$TDUUPDATE` header
+timestamps, so source identity comes from `archiagent.ingest.digest`, not a
+byte hash. The converted DXF is kept beside the outputs for debugging, not
+because replay depends on it.
 """
 from __future__ import annotations
 

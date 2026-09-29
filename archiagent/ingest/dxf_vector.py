@@ -7,7 +7,6 @@ their analytic source geometry is retained for interpretation and review.
 from __future__ import annotations
 
 from dataclasses import replace
-import hashlib
 import math
 from pathlib import Path
 
@@ -15,6 +14,7 @@ import ezdxf
 from ezdxf import path as dxf_path
 
 from archiagent.evidence import IngestWarning, NativeDimension, SourceEntity
+from archiagent.ingest.digest import dxf_source_digest
 from archiagent.primitives import Primitive, PrimitiveSet, TextItem
 
 
@@ -29,14 +29,6 @@ INSUNITS_PER_FOOT: dict[int, float] = {
 
 def units_from_header(doc) -> float | None:
     return INSUNITS_PER_FOOT.get(doc.header.get("$INSUNITS", 0))
-
-
-def _sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _xy(v) -> tuple[float, float]:
@@ -232,5 +224,5 @@ def load_dxf(path: str | Path,
     points = [pt for p in prims for pt in p.coords]
     xs, ys = zip(*points) if points else ((0.0,), (0.0,))
     return PrimitiveSet(tuple(prims), tuple(texts), max(xs)-min(xs), max(ys)-min(ys),
-                        str(path), _sha256(path), tuple(entities), tuple(dimensions),
+                        str(path), dxf_source_digest(path), tuple(entities), tuple(dimensions),
                         tuple(warnings), declared), float(upf)

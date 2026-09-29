@@ -40,6 +40,19 @@ def file_sha256(path):
     return h.hexdigest()
 
 
+def source_digest(path):
+    """Content fingerprint binding a manifest to the drawing it was frozen from.
+
+    A DXF is fingerprinted with its two volatile "last updated" header
+    timestamps neutralised, so reconverting the same DWG -- which rewrites
+    exactly those -- still replays. Every other source type is hashed whole.
+    """
+    if Path(path).suffix.lower() == ".dxf":
+        from archiagent.ingest.digest import dxf_source_digest
+        return dxf_source_digest(path)
+    return file_sha256(path)
+
+
 def implementation_versions():
     from archiagent.classify.prompt import PROMPT_VERSION
     from archiagent.classify.interpretation_prompt import INTERPRETATION_PROMPT_VERSION
@@ -225,7 +238,10 @@ def read_manifest(path, source_path):
     supplied = data.get("content_sha256")
     if supplied != digest({k: v for k, v in data.items() if k != "content_sha256"}):
         raise ValueError("interpretation content digest mismatch; regenerate a reviewed manifest revision")
-    if data.get("source_sha256") != file_sha256(source_path):
+    # The raw byte hash is accepted too, for manifests frozen before the
+    # normalised digest existed. Both fingerprint the same file, so this
+    # widens compatibility, not the set of drawings that pass.
+    if data.get("source_sha256") not in (source_digest(source_path), file_sha256(source_path)):
         raise ValueError("interpretation source checksum does not match the supplied drawing")
     if not isinstance(data.get("models"), list) or not data["models"]:
         raise ValueError("interpretation requires at least one model")

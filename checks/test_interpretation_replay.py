@@ -148,3 +148,68 @@ def test_real_dxf_freeze_replay_preserves_rotated_wall_hole(tmp_path,unit_code,u
     f=ifcopenshell.open(str(output))
     assert len(f.by_type('IfcWall'))==1
     assert len(f.by_type('IfcArbitraryProfileDefWithVoids'))==1
+
+
+# --- source binding survives reconversion of the DWG (Phase 4) ---------------
+
+def oda_dxf(tdupdate, tduupdate, entity="LINE"):
+    """An ASCII DXF shaped like ODA's output: header pairs, then entities."""
+    return "\r\n".join([
+        "  0", "SECTION", "  2", "HEADER",
+        "  9", "$ACADVER", "  1", "AC1032",
+        "  9", "$TDUPDATE", " 40", tdupdate,
+        "  9", "$TDUUPDATE", " 40", tduupdate,
+        "  0", "ENDSEC",
+        "  0", "SECTION", "  2", "ENTITIES", "  0", entity,
+        "  0", "ENDSEC", "  0", "EOF", "",
+    ])
+
+
+def test_replay_accepts_the_same_dwg_converted_again(tmp_path):
+    """ODA rewrites two timestamps per run; that must not invalidate a freeze."""
+    from archiagent.interpretation import source_digest
+    source = tmp_path / "plan.dxf"
+    source.write_text(oda_dxf("2461313.817027269", "2461313.587860602"))
+    before = source.read_bytes()
+    model = replace(fixture_model(), source_path=str(source),
+                    source_sha256=source_digest(source),
+                    layer_decisions=(LayerDecision('Walls', Role.WALL_STRUCTURAL, .9, 'native', 'manual'),))
+    model = replace(model, issues=validate(model))
+    frozen = save_manifest([model], tmp_path / 'frozen.json')
+
+    # The converted DXF was lost and the DWG reconverted in place: same
+    # drawing, new clock. A byte hash would call this a different drawing.
+    source.write_text(oda_dxf("2461399.111111111", "2461399.222222222"))
+    assert source.read_bytes() != before
+    assert file_sha256(source) != model.source_sha256
+
+    models, _ = read_manifest(frozen, source)
+    assert models == (model,)
+
+
+def test_replay_still_rejects_a_genuinely_different_drawing(tmp_path):
+    from archiagent.interpretation import source_digest
+    source = tmp_path / "plan.dxf"
+    source.write_text(oda_dxf("2461313.817027269", "2461313.587860602"))
+    model = replace(fixture_model(), source_path=str(source),
+                    source_sha256=source_digest(source),
+                    layer_decisions=(LayerDecision('Walls', Role.WALL_STRUCTURAL, .9, 'native', 'manual'),))
+    model = replace(model, issues=validate(model))
+    frozen = save_manifest([model], tmp_path / 'frozen.json')
+
+    source.write_text(oda_dxf("2461313.817027269", "2461313.587860602", entity="CIRCLE"))
+    with pytest.raises(ValueError, match="source checksum"):
+        read_manifest(frozen, source)
+
+
+def test_replay_accepts_a_manifest_frozen_before_the_normalised_digest(tmp_path):
+    """Manifests already on disk carry a raw byte hash. They must keep replaying."""
+    source = tmp_path / "plan.dxf"
+    source.write_text(oda_dxf("2461313.817027269", "2461313.587860602"))
+    model = replace(fixture_model(), source_path=str(source),
+                    source_sha256=file_sha256(source),
+                    layer_decisions=(LayerDecision('Walls', Role.WALL_STRUCTURAL, .9, 'native', 'manual'),))
+    model = replace(model, issues=validate(model))
+    frozen = save_manifest([model], tmp_path / 'frozen.json')
+    models, _ = read_manifest(frozen, source)
+    assert models == (model,)
