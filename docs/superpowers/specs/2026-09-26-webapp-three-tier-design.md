@@ -347,6 +347,96 @@ No HTTP server, no S3 client, no job awareness. It reads a directory and writes 
 directory. The worker (§7) does the I/O. This keeps the CLI testable exactly as
 it is today and keeps `--replay-manifest` meaningful.
 
+### 5.4 IDS compliance, and the false pass
+
+IDS validation ships in Tier 1, in Python, via `ifctester` -- buildingSMART's
+reference implementation, from the IfcOpenShell project. It runs in-process with
+the ifcopenshell that authored the file, in the existing pre-delivery gate beside
+`validate_export`, so a non-compliant model is never handed over. It does **not**
+run in Tier 3: a report written beside a finished `plan.ifc` arrives too late to
+be a gate. The IDS file is **archiAgent's own**, versioned at
+`archiagent/data/archiagent.ids`; a client-supplied IDS is optional and additive.
+
+**Measured 2026-09-29/30: a zero-match IDS specification reports a PASS.**
+
+IDS entity matching is exact. buildingSMART's specification states there is no
+automatic inheritance in entity facet interpretation, so every class must be
+named explicitly. archiAgent authors straight wall runs as
+`IfcWallStandardCase` (`ifc/author.py:271`, enforced by `ifc/inspect.py:202`) and
+profile walls as `IfcWall` (`ifc/author.py:240`). Against a real authored IFC
+with 169 walls, one specification requiring an `ArchiAgent_Provenance` property:
+
+| IDS names | applicable entities | passed | failed | verdict |
+|---|---|---|---|---|
+| `IfcWall` | **0** | 0 | 0 | **PASS** |
+| `IfcWallStandardCase` | 169 | 169 | 0 | PASS |
+
+`ifctester` and `@ifc-lite/ids` agree, so this is the standard's behaviour, not
+an implementation defect. `ifcopenshell`'s own `by_type("IfcWall")` returns all
+169, so the IFC is schema-correct; the asymmetry belongs to IDS alone.
+
+**The rule this project adds: a specification that checked nothing is never
+reported as a pass.** Its verdict is `inconclusive`, and the report carries an
+explicit disclaimer naming it as a possible false pass. For now this is
+*disclosed, not blocking*: a plan legitimately may have no doors, and refusing
+delivery over an absent class would be wrong. What must never happen is a green
+tick over an empty check. Flipping `inconclusive` to a delivery refusal is one
+constant, and the decision to do so should follow evidence that the disclaimer
+is being ignored.
+
+The built-in IDS names both wall classes in every wall specification. Any edit
+to it must, or it silently checks nothing.
+
+### 5.5 The property gap, and how it closes
+
+archiAgent authors exactly one property set, `ArchiAgent_Provenance`
+(`ifc/author.py:190`). It authors no standard sets -- no `Pset_WallCommon`, no
+`Pset_DoorCommon`, no `Qto_*` quantities. Real client IDS files ask for those
+almost without exception, so a client IDS will fail against archiAgent output
+today. That failure is honest and should not be closed by inventing values.
+
+The gap is three different problems wearing one name, and only the first two are
+archiAgent's to solve:
+
+**1. Derivable from what archiAgent already knows -- author it.** These have a
+real basis in the model and an existing provenance flag to qualify them:
+
+| Property | Basis already in the model |
+|---|---|
+| `Pset_WallCommon.LoadBearing` | `Role.WALL_STRUCTURAL` vs `Role.WALL_PARTITION` from layer classification, with `LayerDecision.confidence` |
+| `Pset_WallCommon.IsExternal` | wall centreline against `BuildingModel.footprints` |
+| `Pset_WallCommon.Reference` | `WallSeg.thickness_ft` + `source_layer` as a type label |
+| `Qto_WallBaseQuantities` (`Length`, `Width`, `Height`, `GrossSideArea`) | `WallSeg.length_ft`, `thickness_ft`, `wall_height_ft`, qualified by `thickness_source` (`measured` / `default`) |
+| `IfcDoor.OverallWidth` / `OverallHeight`, `Pset_DoorCommon` | `Opening.start/end`, `height_ft`, qualified by `assumed_height` and `evidence` |
+| `Pset_SpaceCommon`, `Qto_SpaceBaseQuantities` | `BuildingModel.spaces` polygons |
+
+Each must carry its qualification rather than assert a bare value. The pattern
+already exists: `AppearancePreset` ships beside `AppearanceBasis`, which says
+"Illustrative class palette; not a verified material or construction assembly".
+A derived `LoadBearing` needs the same treatment -- it is a layer-name inference,
+not a structural engineer's determination, and the IFC must say so.
+
+**2. Not derivable from a 2D plan -- accept it as declared input.** Fire ratings,
+acoustic ratings, thermal transmittance, real material assemblies. No amount of
+geometry yields these. They need an input channel: an operator- or
+client-supplied overlay keyed by wall role, source layer, or thickness class,
+carried into the IFC and recorded as *declared by the operator*, never inferred.
+That mirrors how `--units-per-foot` already overrides a header archiAgent
+refuses to trust.
+
+**3. Neither derivable nor supplied -- let it fail, and say why.** When a client
+IDS requires a property in neither category, the gate must report "required by
+your IDS; not derivable from a 2D plan; not supplied" rather than a bare
+failure. That sentence is actionable; `FAIL` is not. Inventing a plausible value
+to turn the report green would be the single worst thing this software could do,
+because the output's whole value is that its claims are traceable.
+
+Sequencing: category 1 is a Tier 1 increment of its own, after the gate exists,
+and it extends the built-in IDS as it goes -- every newly authored property
+becomes a newly asserted specification. Category 2 needs its own small design
+(what the overlay format is, how it is reviewed, how it reaches the worker) and
+should not be bolted onto the gate.
+
 ---
 
 ## 6. Tier 2 — The browser viewer (Fragments)
