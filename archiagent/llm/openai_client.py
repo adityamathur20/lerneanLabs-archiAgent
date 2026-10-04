@@ -31,6 +31,9 @@ _NO_SDK = (
 )
 
 
+from archiagent.llm.usage import current as _usage
+
+
 class OpenAICompatClient:
     def __init__(self, model: str, api_key: str | None = None,
                  base_url: str | None = None,
@@ -84,10 +87,10 @@ class OpenAICompatClient:
                 {"role": "system", "content": system},
                 {"role": "user", "content": content},
             ],
-            schema=schema, max_tokens=max_tokens)
+            schema=schema, max_tokens=max_tokens, vision=True)
 
     def _request(self, *, messages: list[dict], schema: dict,
-                max_tokens: int) -> dict:
+                max_tokens: int, vision: bool = False) -> dict:
         try:
             resp = self._client.chat.completions.create(
                 model=self._model,
@@ -115,6 +118,19 @@ class OpenAICompatClient:
             raise LLMUnavailable(
                 f"OpenAI-compatible API call failed unexpectedly "
                 f"({type(e).__name__}): {e}") from e
+
+        # Telemetry, before any parsing can raise: a malformed reply still
+        # cost tokens, and omitting failed calls understates the run.
+        u = getattr(resp, "usage", None)
+        details = getattr(u, "prompt_tokens_details", None)
+        _usage().record(
+            provider="openai",
+            model=self._model,
+            input_tokens=getattr(u, "prompt_tokens", 0) or 0,
+            output_tokens=getattr(u, "completion_tokens", 0) or 0,
+            cached_input_tokens=getattr(details, "cached_tokens", 0) or 0,
+            vision=vision,
+        )
 
         if not resp.choices:
             # Azure's content filter, and some Groq/DeepSeek error shapes,

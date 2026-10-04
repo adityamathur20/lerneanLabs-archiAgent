@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
 
+from archiagent.llm.usage import purpose as _llm_purpose
 from archiagent.classify.escalate import (ESCALATION_CAP, escalation_candidates,
                                           select_for_escalation)
 from archiagent.classify.inventory import LayerStats
@@ -94,12 +95,13 @@ class DxfLayerClassifier:
         self._on_issue = on_issue
 
     def classify(self, stats: tuple[LayerStats, ...]) -> Classification:
-        reply = self._client.classify_json(
-            system=DXF_SYSTEM_PROMPT,
-            user=build_dxf_user_prompt(stats),
-            schema=response_schema(),
-            max_tokens=self._max_tokens,
-        )
+        with _llm_purpose("layer-classification"):
+            reply = self._client.classify_json(
+                system=DXF_SYSTEM_PROMPT,
+                user=build_dxf_user_prompt(stats),
+                schema=response_schema(),
+                max_tokens=self._max_tokens,
+            )
         stage1 = decisions_from_reply(reply, stats)
 
         uncapped = escalation_candidates(stage1, stats)
@@ -205,13 +207,14 @@ class DxfLayerClassifier:
 
         names = {name for name, _ in batch}
         batch_stats = tuple(s for s in stats if s.name in names)
-        reply = self._client.classify_json_vision(
-            system=DXF_SYSTEM_PROMPT,
-            user=build_dxf_user_prompt(batch_stats),
-            schema=response_schema(),
-            images=images,
-            max_tokens=self._max_tokens,
-        )
+        with _llm_purpose("layer-classification-vision"):
+            reply = self._client.classify_json_vision(
+                system=DXF_SYSTEM_PROMPT,
+                user=build_dxf_user_prompt(batch_stats),
+                schema=response_schema(),
+                images=images,
+                max_tokens=self._max_tokens,
+            )
         return {d.layer: d for d in decisions_from_reply(reply, batch_stats)
                 if d.source == "llm"}
 

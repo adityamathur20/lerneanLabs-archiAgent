@@ -8,6 +8,8 @@ keep working in an install without the `llm` extra.
 from __future__ import annotations
 
 import base64
+
+from archiagent.llm.usage import current as _usage
 import json
 import os
 
@@ -77,10 +79,10 @@ class AnthropicClient:
 
         return self._request(
             messages=[{"role": "user", "content": content}],
-            system=system, schema=schema, max_tokens=max_tokens)
+            system=system, schema=schema, max_tokens=max_tokens, vision=True)
 
     def _request(self, *, messages: list[dict], system: str, schema: dict,
-                max_tokens: int) -> dict:
+                max_tokens: int, vision: bool = False) -> dict:
         try:
             resp = self._client.messages.create(
                 model=self._model,
@@ -103,6 +105,11 @@ class AnthropicClient:
                 f"Anthropic API call failed unexpectedly "
                 f"({type(e).__name__}): {e}") from e
 
+        # Telemetry, recorded before any parsing can raise: a truncated or
+        # malformed reply still cost tokens, and a report that silently omits
+        # the failed calls understates what a run spent.
+        _record_usage(resp, provider="anthropic", model=self._model, vision=vision)
+
         stop = getattr(resp, "stop_reason", None)
         if stop == "max_tokens":
             raise LLMSchemaError(
@@ -120,3 +127,22 @@ class AnthropicClient:
         except json.JSONDecodeError as e:
             raise LLMSchemaError(
                 f"the reply was not valid JSON: {e}") from e
+
+
+def _record_usage(resp, *, provider: str, model: str, vision: bool) -> None:
+    """Records what the provider said this call cost.
+
+    Usage is telemetry: a provider that omits it, or renames a field, must cost
+    the conversion nothing. Hence the getattr defaults rather than indexing.
+    """
+    u = getattr(resp, "usage", None)
+    _usage().record(
+        provider=provider,
+        model=model,
+        input_tokens=getattr(u, "input_tokens", 0) or 0,
+        output_tokens=getattr(u, "output_tokens", 0) or 0,
+        # Anthropic bills a cache read at a different rate from fresh input, so
+        # the two are never folded together.
+        cached_input_tokens=getattr(u, "cache_read_input_tokens", 0) or 0,
+        vision=vision,
+    )

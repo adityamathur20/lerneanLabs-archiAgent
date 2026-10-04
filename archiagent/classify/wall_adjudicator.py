@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from archiagent.llm.usage import purpose as _llm_purpose
 from archiagent.classify.llm_classifier import MAX_TOKENS
 from archiagent.classify.thumbnails import RenderUnavailable, render_candidate
 from archiagent.llm.client import LLMClient, LLMSchemaError
@@ -125,10 +126,11 @@ class WallAdjudicator:
         return verdicts, tuple(sorted(issues, key=lambda i: (i.entity, i.msg)))
 
     def _batch(self, batch, images):
-        reply = self._client.classify_json_vision(
-            system=SYSTEM_PROMPT, user=build_user_prompt(batch), schema=response_schema(),
-            images=[(f"candidate {c.id}", images[c.id]) for c in batch],
-            max_tokens=self._max_tokens)
+        with _llm_purpose("wall-adjudication"):
+            reply = self._client.classify_json_vision(
+                system=SYSTEM_PROMPT, user=build_user_prompt(batch), schema=response_schema(),
+                images=[(f"candidate {c.id}", images[c.id]) for c in batch],
+                max_tokens=self._max_tokens)
         return verdicts_from_reply(reply, batch)
 
 

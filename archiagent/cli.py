@@ -530,12 +530,51 @@ def _staging_dirs() -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     """Run the tool, then clean up anything conversion staged."""
+    code = EXIT_PIPELINE
     try:
-        return _main(argv)
+        code = _main(argv)
+        return code
     finally:
+        # Written on every exit path, including failures: a run that died after
+        # three LLM calls still spent those tokens, and a report that appears
+        # only on success understates what a drawing costs.
+        _dump_usage_report(argv, code)
         dirs = _staging_dirs()
         while dirs:
             shutil.rmtree(dirs.pop(), ignore_errors=True)
+
+
+def _dump_usage_report(argv: list[str] | None, exit_code: int) -> None:
+    """Writes `<stem>.tokens.json` beside the other artifacts.
+
+    Never raises: telemetry must not be able to change a run's outcome.
+    """
+    try:
+        from archiagent.llm.usage import current
+
+        parsed, _ = _parser().parse_known_args(
+            sys.argv[1:] if argv is None else list(argv))
+        out_dir = getattr(parsed, "outputDir", None)
+        source = (getattr(parsed, "dxfFilePath", None)
+                  or getattr(parsed, "pdfFilePath", None)
+                  or getattr(parsed, "dwgFilePath", None))
+        if not out_dir or not source:
+            return
+
+        report = current().report()
+        report["source"] = str(source)
+        report["exit_code"] = exit_code
+
+        destination = Path(out_dir) / f"{Path(source).stem}.tokens.json"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(json.dumps(report, indent=2, sort_keys=True))
+
+        totals = report["totals"]
+        print(f"tokens: {totals['calls']} call(s), in={totals['input_tokens']} "
+              f"out={totals['output_tokens']} cached_in={totals['cached_input_tokens']} "
+              f"-> {destination.name}", file=sys.stderr)
+    except Exception as error:
+        print(f"warning: could not write the token report ({error})", file=sys.stderr)
 
 
 def _main(argv: list[str] | None = None) -> int:

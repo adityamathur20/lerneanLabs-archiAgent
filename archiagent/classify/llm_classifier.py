@@ -11,6 +11,7 @@ client at all.
 
 from __future__ import annotations
 
+from archiagent.llm.usage import purpose as _llm_purpose
 from archiagent.classify.inventory import LayerStats
 from archiagent.classify.layers import Classification, LayerDecision
 from archiagent.classify.prompt import (SYSTEM_PROMPT, build_user_prompt,
@@ -103,10 +104,11 @@ class LLMLayerClassifier:
         self._max_tokens = max_tokens
 
     def classify(self, stats: tuple[LayerStats, ...]) -> Classification:
-        reply = self._client.classify_json(
-            system=SYSTEM_PROMPT,
-            user=build_user_prompt(stats),
-            schema=response_schema(),
-            max_tokens=self._max_tokens,
-        )
+        with _llm_purpose("layer-classification"):
+            reply = self._client.classify_json(
+                system=SYSTEM_PROMPT,
+                user=build_user_prompt(stats),
+                schema=response_schema(),
+                max_tokens=self._max_tokens,
+            )
         return decisions_from_reply(reply, stats)
