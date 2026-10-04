@@ -10,7 +10,7 @@
 ## 1. What this builds
 
 Phase 6 puts **what already exists** on a public host. It adds no product
-features. The deliverable is: a stranger with an API key can POST a DXF to
+features. The deliverable is: a stranger with an API key can POST a DXF **or PDF** to
 `api.planto3d.in`, poll the job, and open the resulting IFC in a browser at
 `planto3d.in` over TLS.
 
@@ -34,6 +34,9 @@ Phase 6 ends with a URL that works. Phase 7 then changes one thing at a time.
 
 ### 2.1 Ships
 
+- **DXF and PDF ingest**, which needs no code change: `ALLOWED_SUFFIXES` in
+  `uploads.py` is already `{".dxf", ".dwg", ".pdf"}` and `build_command` already
+  maps `.pdf` to `--pdfFilePath`
 - Two container images (`api`, `worker`) built from the existing service
 - `docker-compose.prod.yml`: Caddy, Postgres, Redis, Garage, api, worker
 - Garage as the S3 backend, on the VPS disk, with `storage.py` unmodified
@@ -49,12 +52,20 @@ Phase 6 ends with a URL that works. Phase 7 then changes one thing at a time.
 
 | Deferred | Why |
 |---|---|
-| **DWG upload** | The converter in use is a macOS `.app` bundle; the Linux build is a different binary needing an X11/xvfb shim. Independently, ODA's redistribution terms restrict bundling into a hosted service — the service README already records this as a business prerequisite. Phase 6 launches **DXF-only**, which is a configured state the service was built to handle: it returns 400 for `.dwg` on a worker with no converter. |
+| **DWG upload** | The converter in use is a macOS `.app` bundle; the Linux build is a different binary needing an X11/xvfb shim. Independently, ODA's redistribution terms restrict bundling into a hosted service — the service README already records this as a business prerequisite. Phase 6 launches **DXF and PDF**, and `.dwg` stays refused — a configured state the service was built to handle: it returns 400 for `.dwg` on a worker with no converter. |
 | **Browser upload UI** | Uploading from the browser requires a credential in the browser. The only credential that exists today is a tenant API key, which grants that tenant's *entire* account. Putting one in a web page would be a security defect, not a shortcut. Upload arrives in Phase 7 with session auth. |
 | **Accounts, projects, plan limits** | Phase 7. |
 | **Billing, LLM quotas** | Phase 8. Until then, LLM spend is bounded by key distribution: there is no public signup, so only keys issued by hand can spend money. |
 
-### 2.3 The honest limitation this leaves
+### 2.3 Known limitations this leaves
+
+**Multi-page PDFs always convert page 0.** The CLI takes `--page` (default 0),
+but `build_command` in `pipeline.py` plumbs only `units-per-foot`, `height` and
+`walls` from the job's `options`. A two-page plan set therefore yields the first
+page. Exposing `page` is a one-line addition to `build_command` plus a field in
+the upload request; it is listed here rather than silently inherited.
+
+### 2.4 The honest limitation this leaves
 
 After Phase 6, `planto3d.in` is a **viewer for jobs that already exist**, and
 jobs are created with `curl` and an API key. That is a private beta, not a
@@ -188,13 +199,24 @@ environment. That is the design working as intended.
 
 ## 7. Code transfer and deployment
 
-### 7.1 The blocker
+### 7.1 The two repositories
 
-`archiagent-viewer` is a git repository **with no remote**. It contains the
-entire service tier. Until it is pushed somewhere the VPS can clone, there is no
-deployment. `lerneanLabs-archiAgent` is on GitHub
-(`adityamathur20/lerneanLabs-archiAgent`); its visibility must be confirmed
-private before a server is configured to pull it with a key.
+| Local | Remote | Observed visibility |
+|---|---|---|
+| `archiagent-viewer/` | `github.com/adityamathur20/lerneanLabs-archiViewer` | **not publicly readable** — private, or still empty |
+| `lerneanLabs-archiAgent/` | `github.com/adityamathur20/lerneanLabs-archiAgent` | **public** (`git ls-remote` returns HEAD unauthenticated) |
+
+Two consequences:
+
+1. **The viewer has never been pushed.** Its local git has no remote configured,
+   so the first task of this phase is `git remote add` and a push. Until that
+   lands there is nothing for the VPS to clone, because the service tier lives
+   in that repository.
+2. **archiAgent being public means a deploy key is unnecessary for it** — a
+   plain HTTPS clone works. It also means anything ever committed there is
+   public, so a secret scan of its history (`.env`, API keys, tokens) is a
+   prerequisite to launch, not a nicety. If the viewer repo is private, it needs
+   one read-only deploy key; if it is made public, the same scan applies to it.
 
 ### 7.2 Mechanism
 
