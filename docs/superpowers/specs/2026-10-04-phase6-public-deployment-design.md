@@ -231,6 +231,34 @@ never compiles anything. Rollback becomes `pull` of the previous tag.
 racing `alembic upgrade head` is a corrupted schema; and an app that migrates on
 boot cannot be rolled back without rolling back the database.
 
+### 7.4 Hostinger's Docker Manager is not the deploy mechanism
+
+Hostinger's panel offers a Docker Manager: compose-from-URL or pasted YAML,
+lifecycle buttons, aggregated logs. It is declined for deployment, for reasons
+that are structural rather than stylistic:
+
+- **The first deploy builds from two source trees.** The worker image needs both
+  this repo and `archiagent-viewer`; a compose file URL supplies no build
+  context. Docker Manager assumes the images already exist.
+- **Secrets would move into the panel.** `.env` is generated on the box and
+  `chmod 600`. Pasting the Postgres password, Garage keys and LLM key into a
+  web form puts them in Hostinger's database instead of a file under our
+  control.
+- **It creates a second source of truth.** Production editable in a web form
+  means the repository no longer describes what is running.
+- **It covers none of the steps that matter here:** `alembic upgrade head` as a
+  discrete pre-start step, one-time `garage bucket create` / `key create`, and
+  deploy-key setup are SSH work either way.
+
+Two things from Hostinger *are* taken: the **Docker-preinstalled OS template**
+(saves a provisioning step, no lock-in), and Docker Manager as a **read-only
+dashboard** for container status and logs from a browser.
+
+Note for later: once §7.3's GHCR pipeline lands, the compose file references
+prebuilt images and needs no build context, at which point compose-from-URL
+becomes technically possible. It still would not address secrets or migrations,
+so this decision stands.
+
 ---
 
 ## 8. The viewer's production data path
