@@ -167,6 +167,32 @@ Caddy route into the compose network, so §3's rule holds — the store is never
 bound to a public interface directly, and its access keys remain the
 authorization boundary.
 
+### 4.4 Cross-origin access is required at two hops
+
+The viewer is served from `planto3d.in` and talks to `api.planto3d.in`, which
+is a different origin. `api.py` installs **no CORS middleware today** — there
+was never a cross-origin caller, because the dev server served both from
+`localhost:5173`. Without it every viewer request fails in the browser while
+working perfectly under `curl`.
+
+Two hops need it, for different reasons:
+
+| Hop | Needs | Why |
+|---|---|---|
+| `planto3d.in` → `api.planto3d.in` | FastAPI `CORSMiddleware`, allowing the viewer origin and the `authorization` header | These requests carry a bearer token, which makes them non-simple and triggers an `OPTIONS` preflight that FastAPI must answer |
+| `api.planto3d.in` → 302 → `s3.planto3d.in` | `Access-Control-Allow-Origin` on the **Garage** response | `fetch` follows the redirect, and the *final* response is the one whose CORS headers are checked against the original origin |
+
+The second hop is served by **Caddy adding the header on the `s3` route**, not
+by per-bucket S3 CORS configuration: it keeps the policy in one file next to the
+routing it belongs to. A presigned GET sends no custom headers — the credential
+is in the query string — so it is a simple request and needs no preflight, only
+the response header.
+
+**The bearer token must not reach Garage.** Browsers strip `Authorization` on
+cross-origin redirects, so this holds by default; it is recorded because a
+forwarded bearer token would collide with Garage's own query-string signature
+and fail in a way that looks like a storage bug.
+
 ### 4.2 Operational facts that will bite
 
 - **Garage has no container healthcheck mechanism.** Compose cannot
