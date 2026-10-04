@@ -186,7 +186,8 @@ One `.env` on the VPS, never committed, generated from a committed
 | `ARCHIAGENT_SERVICE_REDIS_URL` | `localhost:6380` | `redis:6379` |
 | `ARCHIAGENT_SERVICE_S3_ENDPOINT` | `localhost:9090` | `http://garage:3900` |
 | `ARCHIAGENT_SERVICE_S3_ACCESS_KEY` / `_SECRET_KEY` | `test` / `test` | issued by `garage key create` |
-| `ANTHROPIC_API_KEY` | from shell | worker only; the api never needs it |
+| `ANTHROPIC_API_KEY` | from shell | **worker only**; the api never needs it. Anthropic is the chosen provider |
+| `ACME_EMAIL` | n/a | `lerneantechlabs@gmail.com` — Caddy's Let's Encrypt account |
 
 Secrets are generated on the VPS (`openssl rand`), not chosen by hand and not
 transmitted. The `.env` is `chmod 600`, owned by the deploy user.
@@ -337,8 +338,14 @@ Four records, all `A` to the VPS IPv4 (plus `AAAA` if Hostinger assigns IPv6):
 | `api.planto3d.in` | A | VPS IP |
 | `planto3d.si` | A | VPS IP |
 
-TLS is Caddy's automatic Let's Encrypt — no certbot, no renewal cron, no
-expiry incident. Caddy must hold its `/data` volume across restarts or it will
+**DNS is managed at the registrar directly** — no Cloudflare in front, so
+Caddy's HTTP-01 challenge reaches the origin with no proxy caveats. Pre-existing
+parking records must be deleted, and AAAA records must be absent unless
+Hostinger actually assigns IPv6: an AAAA pointing nowhere while A works produces
+intermittent IPv6-only failures that read as random downtime.
+
+TLS is Caddy's automatic Let's Encrypt, registered to `lerneantechlabs@gmail.com`
+— no certbot, no renewal cron, no expiry incident. Caddy must hold its `/data` volume across restarts or it will
 re-request certificates and hit rate limits.
 
 **DNS must resolve before the first `up -d`.** Caddy orders certificates at
