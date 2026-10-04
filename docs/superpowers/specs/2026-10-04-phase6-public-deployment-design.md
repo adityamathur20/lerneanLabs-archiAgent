@@ -107,6 +107,7 @@ access keys, so it must never be bound to a public interface.
 | `planto3d.in` | viewer static build |
 | `www.planto3d.in` | 301 → `planto3d.in` |
 | `api.planto3d.in` | FastAPI |
+| `s3.planto3d.in` | Garage's S3 API (§4.3 — required, not optional) |
 | `planto3d.si` | 301 → `planto3d.in` |
 
 `.si` is held defensively and redirected. It is not a second deployment, and it
@@ -137,6 +138,34 @@ including presigned URLs, so **no application code changes**. What changes is
 | S3Mock | Rejected for production. It is a test double; it is in `docker-compose.yml` for exactly that reason. |
 | Filesystem backend | Rejected. `presign_get`/`presign_put` are S3 features; replacing them means writing signed-URL endpoints in FastAPI — new code on the auth-critical path, to avoid running a container that costs 200 MB. |
 | Backblaze B2 / AWS S3 | Viable and better for durability, rejected for Phase 6 on cost, and because it moves artifacts out of India. Reconsider when there is revenue. Because `storage.py` is untouched, this remains an endpoint change later. |
+
+### 4.3 Garage must be publicly reachable, on one canonical hostname
+
+This is the non-obvious requirement of the whole phase, and skipping it
+produces a failure that cannot appear in development.
+
+`get_artifact` returns **a 302 to a presigned URL**, by deliberate design
+("302, never a proxy"). A SigV4 presigned URL always signs the `host` header,
+so the signature is only valid for the hostname it was generated for. Three
+consequences follow:
+
+1. If `S3_ENDPOINT` is the compose-internal `http://garage:3900`, the browser is
+   redirected to a hostname that does not resolve outside Docker. The download
+   fails for every user.
+2. Rewriting the host of an already-signed URL invalidates the signature. There
+   is no post-hoc fix.
+3. Therefore Garage needs a public hostname, **and api, worker and browser must
+   all use the same one**, or each will sign for a host the others reject.
+
+The resolution: `ARCHIAGENT_SERVICE_S3_ENDPOINT = https://s3.planto3d.in` for
+every component, with Caddy reverse-proxying that hostname to `garage:3900`.
+The worker's own uploads then hairpin through Caddy over loopback, which is
+negligible and buys one canonical signing host.
+
+**Garage still publishes no host port.** Only Caddy does; `s3.planto3d.in` is a
+Caddy route into the compose network, so §3's rule holds — the store is never
+bound to a public interface directly, and its access keys remain the
+authorization boundary.
 
 ### 4.2 Operational facts that will bite
 
@@ -184,7 +213,7 @@ One `.env` on the VPS, never committed, generated from a committed
 |---|---|---|
 | `ARCHIAGENT_SERVICE_DATABASE_URL` | `archiagent:archiagent@localhost:5433` | generated password, host `postgres:5432` |
 | `ARCHIAGENT_SERVICE_REDIS_URL` | `localhost:6380` | `redis:6379` |
-| `ARCHIAGENT_SERVICE_S3_ENDPOINT` | `localhost:9090` | `http://garage:3900` |
+| `ARCHIAGENT_SERVICE_S3_ENDPOINT` | `localhost:9090` | `https://s3.planto3d.in` (§4.3 — **not** `garage:3900`) |
 | `ARCHIAGENT_SERVICE_S3_ACCESS_KEY` / `_SECRET_KEY` | `test` / `test` | issued by `garage key create` |
 | `ANTHROPIC_API_KEY` | from shell | **worker only**; the api never needs it. Anthropic is the chosen provider |
 | `ACME_EMAIL` | n/a | `lerneantechlabs@gmail.com` — Caddy's Let's Encrypt account |
@@ -329,13 +358,14 @@ upload form.
 
 ## 9. DNS and TLS
 
-Four records, all `A` to the VPS IPv4 (plus `AAAA` if Hostinger assigns IPv6):
+Five records, all `A` to the VPS IPv4 (plus `AAAA` if Hostinger assigns IPv6):
 
 | Host | Type | Value |
 |---|---|---|
 | `planto3d.in` | A | VPS IP |
 | `www.planto3d.in` | A | VPS IP |
 | `api.planto3d.in` | A | VPS IP |
+| `s3.planto3d.in` | A | VPS IP |
 | `planto3d.si` | A | VPS IP |
 
 **DNS is managed at the registrar directly** — no Cloudflare in front, so
@@ -397,8 +427,10 @@ Phase 6 is done when, from a machine that is not the VPS:
 
 1. `curl https://api.planto3d.in/healthz` → 200 over valid TLS
 2. `curl https://planto3d.si -I` → 301 to `https://planto3d.in`
-3. A DXF uploaded with a real API key reaches `succeeded`, and
-   `plan.ifc`, `plan.report.json` and `plan.interpretation.json` download
+3. A DXF **and a PDF** uploaded with a real API key reach `succeeded`, and
+   `plan.ifc`, `plan.report.json` and `plan.interpretation.json` download — the
+   download followed from a browser, not curl on the box, since that is what
+   proves §4.3's signing host is right
 4. `planto3d.in` lists that job and renders its walls
 5. `curl` with another tenant's job id → **404**, not 403 (the existing
    `auth.owned_job` guarantee, re-verified across the network)
