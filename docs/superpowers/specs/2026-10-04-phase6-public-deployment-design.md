@@ -108,7 +108,7 @@ access keys, so it must never be bound to a public interface.
 | `www.planto3d.in` | 301 → `planto3d.in` |
 | `api.planto3d.in` | FastAPI |
 | `s3.planto3d.in` | Garage's S3 API (§4.3 — required, not optional) |
-| `planto3d.si` | 301 → `planto3d.in` |
+| `planto3d.si` | 301 → `planto3d.in` (no `www` variant: a sixth name with no DNS record would retry forever and spend ACME failed-validation attempts) |
 
 `.si` is held defensively and redirected. It is not a second deployment, and it
 is not a locale: serving the same app on two TLDs would split sessions and
@@ -180,13 +180,25 @@ Two hops need it, for different reasons:
 | Hop | Needs | Why |
 |---|---|---|
 | `planto3d.in` → `api.planto3d.in` | FastAPI `CORSMiddleware`, allowing the viewer origin and the `authorization` header | These requests carry a bearer token, which makes them non-simple and triggers an `OPTIONS` preflight that FastAPI must answer |
-| `api.planto3d.in` → 302 → `s3.planto3d.in` | `Access-Control-Allow-Origin` on the **Garage** response | `fetch` follows the redirect, and the *final* response is the one whose CORS headers are checked against the original origin |
+| `api.planto3d.in` → 302 → `s3.planto3d.in` | `Access-Control-Allow-Origin: *` on the **Garage** response | `fetch` follows the redirect and the *final* response is the one checked — but **not against `planto3d.in`** (see below) |
 
-The second hop is served by **Caddy adding the header on the `s3` route**, not
-by per-bucket S3 CORS configuration: it keeps the policy in one file next to the
-routing it belongs to. A presigned GET sends no custom headers — the credential
-is in the query string — so it is a simple request and needs no preflight, only
-the response header.
+**Corrected 2026-10-04, by reproduction in Chrome.** This document originally
+said the store should return the viewer's origin. It must return `*`. The first
+hop (`planto3d.in` → `api.planto3d.in`) is *already* cross-origin, so the Fetch
+spec marks the redirect chain tainted and the request reaches the store with
+`Origin: null`. A header of `https://planto3d.in` fails that check and **every
+artifact download breaks** — while `curl` succeeds, because `curl` performs no
+CORS check at all.
+
+`*` is safe here precisely because **the presigned signature is the
+credential**: credentials mode is never `include`, no cookie is in play, and a
+wildcard grants nothing that possession of the URL did not already grant.
+`Access-Control-Allow-Credentials` must never be added alongside it.
+
+The header is added by **Caddy on the `s3` route**, not by per-bucket S3 CORS
+configuration: it keeps the policy next to the routing it belongs to. A
+presigned GET sends no custom headers — the credential is in the query string —
+so it is a simple request needing no preflight, only the response header.
 
 **The bearer token must not reach Garage.** Browsers strip `Authorization` on
 cross-origin redirects, so this holds by default; it is recorded because a
@@ -195,9 +207,15 @@ and fail in a way that looks like a storage bug.
 
 ### 4.2 Operational facts that will bite
 
-- **Garage has no container healthcheck mechanism.** Compose cannot
-  `depends_on: condition: service_healthy` it, so the api and worker must
-  tolerate a not-yet-ready store at boot.
+- **Garage can be healthchecked after all.** *(Corrected 2026-10-04.)* This
+  document originally claimed it could not, and the api and worker were given a
+  boot-time probe of the store instead. That was wrong twice over: the scratch
+  image carries `/garage`, and `garage status` is already the readiness probe
+  `provision-garage.sh` uses — so `depends_on: {condition: service_healthy}`
+  works. Worse, the probe it replaced went to `S3_ENDPOINT`, i.e. the **public
+  HTTPS host**, so it needed Caddy already serving a *trusted* certificate:
+  on Let's Encrypt staging, which §9 tells the operator to start on, boto3
+  rejected the untrusted certificate and both services crash-looped forever.
 - **Nothing creates the bucket in production.** `storage.py` defines
   `ensure_bucket()`, but its only caller is `tests/conftest.py` — the running
   service never creates its own bucket. Phase 6 therefore creates the bucket,
@@ -241,7 +259,7 @@ One `.env` on the VPS, never committed, generated from a committed
 | `ARCHIAGENT_SERVICE_REDIS_URL` | `localhost:6380` | `redis:6379` |
 | `ARCHIAGENT_SERVICE_S3_ENDPOINT` | `localhost:9090` | `https://s3.planto3d.in` (§4.3 — **not** `garage:3900`) |
 | `ARCHIAGENT_SERVICE_S3_ACCESS_KEY` / `_SECRET_KEY` | `test` / `test` | issued by `garage key create` |
-| `ANTHROPIC_API_KEY` | from shell | **worker only**; the api never needs it. Anthropic is the chosen provider |
+| `ANTHROPIC_API_KEY` | from shell | **worker only**, enforced by per-service `environment:` rather than `env_file:` — the latter handed every secret to both tiers, including `GARAGE_ADMIN_TOKEN`, which the api could have carried to `garage:3903` |
 | `ACME_EMAIL` | n/a | `lerneantechlabs@gmail.com` — Caddy's Let's Encrypt account |
 
 Secrets are generated on the VPS (`openssl rand`), not chosen by hand and not
