@@ -197,8 +197,27 @@ Order of attempts:
 2. **Explicit-override dimensions**, same arithmetic, only when step 1 yielded
    nothing. Each one is recorded in `rejected` if it disagrees with the median,
    since an override that contradicts its own geometry is worth seeing.
-3. **Text consensus.** `resolve_scale(extract_dimensions(ps), candidate_runs(ps, layers))`,
-   the mechanism the PDF path already uses. `basis="text-consensus"`.
+3. **Room-label pairs.** A label like `12'-1½"×12'-10"` states a room's two
+   side lengths. `extract_dimensions` already parses each half, because
+   `parse_dimension` strips a trailing `X`
+   ([dimensions.py:56](../../../archiagent/scale/dimensions.py#L56)). Rather
+   than matching one text to one run, match the **pair** to the bounding box of
+   the enclosure the label sits inside: a room whose label says 12'-1½" × 12'-10"
+   has an interior whose two sides are in that ratio and whose absolute size
+   fixes the scale. Two independent numbers from one label, mutually
+   constraining, make this far stronger than a lone text matched to a lone run.
+   `basis="room-label"`.
+
+   This is the only extraction source that benefits from the declared wall
+   thickness: the label describes the **clear interior** of the room, while the
+   enclosure found from centrelines includes half a wall on each side. Knowing
+   the thickness converts between the two instead of leaving a one-wall-width
+   error, which on a 12ft room at 9in walls is 6% — enough to matter.
+   Without a declared thickness this source is still usable but is recorded with
+   a wider tolerance.
+4. **Text consensus.** `resolve_scale(extract_dimensions(ps), candidate_runs(ps, layers))`,
+   the mechanism the PDF path already uses. The weakest source, because it
+   matches any dimension-shaped text to any candidate run. `basis="text-consensus"`.
 
 Returns `None` when nothing agrees. `rejected` always travels so the report can
 explain why a drawing full of dimensions still produced no scale.
@@ -220,6 +239,26 @@ asserted one.
 `--units-per-foot`'s help text changes to say it is an override and that
 `--scale-from-wall` or `--measure-workbench` is the normal route.
 
+### What the GUI exposes, and what it does not
+
+The flags above are the machine surface. The user does not type them.
+
+- **`--units-per-foot` is not in the GUI at all.** It is an expert CLI override
+  and nothing more. Scale is always computed internally, from the extracted
+  dimensions or from the wall length the user draws. Asking a person how many
+  drawing units make a foot is asking them to describe the file's internals.
+- **`--trust-extracted-scale` is a tick-box**, labelled in the user's terms —
+  *"Use the dimensions already in this drawing"* — showing the scale that was
+  extracted and how many dimensions agreed, for example *"12 units/foot, from 14
+  agreeing dimensions"*. Ticking it **satisfies the scale requirement outright**:
+  no wall measurement is then asked for.
+- The tick-box is **pre-ticked and the measure step hidden** when extraction
+  found a confident scale, so a well-dimensioned drawing needs no interaction.
+  It is **unticked and disabled** when extraction found nothing, with the measure
+  step shown and required.
+- Unticking it reveals the measure step. The two are alternatives, and at least
+  one must be satisfied before the run can proceed.
+
 ## 5. The picker
 
 Promoted from "deferred" to the primary way rung 2 gets its input. It is **not**
@@ -234,6 +273,47 @@ viewer needing no CDN or service, and already has the parts.
 | live coordinates | `#position` readout |
 | export JSON | `download()` and the export buttons |
 | attribution | reviewer field, draft/reviewed status |
+
+### Measured: why SVG stays, rather than adopting a WebGL DXF viewer
+
+The concern that generating SVG is slow was tested rather than assumed. On this
+corpus, building the full SVG path data costs **0.11–0.24 s**. It is not the
+bottleneck. The cost is `load_dxf` itself — **4.8 s** (MR RAJEEV, 17k
+primitives), **10.9 s** (Aiims Road, 53k), **5.6 s** (Floor Plan, 60k) — and the
+pipeline pays that anyway, so the picker adds almost nothing.
+
+The real risk is **DOM size**, not generation: a full payload is 4.8–9.2 MB and
+17k–60k `<path>` nodes, which makes pan and zoom sluggish.
+
+That is solved by sending only what picking a wall needs — no fills, nothing
+shorter than 2 ft:
+
+| Drawing | all primitives | picker payload | share |
+|---|---|---|---|
+| MR RAJEEV JI TWANI JI | 17,017 | 1,073 | 6.3% |
+| Aiims Road 3BHK Flats | 53,310 | 6,544 | 12.3% |
+| Floor Plan.dxf | 59,594 | 25,938 | 43.5% |
+
+1k–26k nodes for a task with no continuous animation — the user pans, zooms and
+clicks twice. SVG handles that.
+
+**Alternatives considered.** `vagran/dxf-viewer` (WebGL via three.js, built
+precisely for huge files) is **MPL-2.0**: usable commercially, but it is
+file-level copyleft, so modifications to its own files must be published.
+`mlightcad/cad-viewer` is reported MIT and ships pan/zoom/measure/annotate out
+of the box, which is the closest off-the-shelf fit — but its DWG support implies
+a parser whose transitive licence must be checked before adoption, since
+LibreDWG is GPL-3 and this project already evaluated and rejected LibreDWG. The
+`dxf` npm parser is MIT but is a parser only, with no viewer or measure tool.
+
+**Decision: keep the self-contained HTML/SVG workbench, with a filtered
+payload.** Adopting a JS viewer would add a build toolchain to a Python project,
+require a transitive-licence review before any commercial use, and forfeit the
+property stated in `review_workbench.py`'s first line — *"no web service or CDN
+required"* — which matters when the thing being rendered is a client's
+confidential drawing. The measured numbers do not justify that trade. Revisit
+only if a drawing appears whose filtered payload is itself too large, and record
+the figure that forced it.
 
 The work:
 

@@ -144,6 +144,43 @@ thought before the veto applied. Weighted-sum behaviour is untouched.
 Without `--wall-thickness-exhaustive`, the declared set only replaces the
 inferred modes — same `+1.0 / -0.5` signal, same weight, tighter tolerance.
 
+### What the declared set does and does not change about layer scope
+
+A common expectation is that declaring thicknesses is what makes the tool search
+**all** layers for parallel lines a wall-thickness apart, instead of only
+`WALL`-named ones. It already does that, and has since geometry-first candidacy:
+`candidate_layers` ([layers.py:93](../../../archiagent/classify/layers.py#L93))
+returns every layer **except** those confidently classified into a never-wall
+role. Layer names gate almost nothing.
+
+One exception worth knowing: filled-body detection (`detect_wall_profiles`,
+[profiles.py:103](../../../archiagent/geometry/profiles.py#L103)) **is** still
+restricted to classified wall layers, because a filled closed shape on an
+arbitrary layer is far more often furniture than wall. Parallel-line pairing is
+unrestricted; hatch/solid body detection is not.
+
+So the declared set does not widen the search. It sharpens the **decision** over
+an already-wide search — which is the half that was guessing.
+
+### The GUI for thicknesses
+
+Thicknesses are picked in the same screen as the scale, not typed as a flag.
+
+- The tool proposes the thickness classes it observed, each with the number of
+  runs supporting it — the same evidence `_thickness_modes` already computes,
+  shown rather than used silently. A reviewer sees `9" (142 runs)`, `4½" (38)`,
+  `2" (6)` and ticks the real ones.
+- **Defaults are pre-filled and the user may simply continue.** Proposals above
+  the existing `MODE_SHARE` are pre-ticked; the rest are offered unticked.
+- **Units are selectable, defaulting to inches.** The value is converted once,
+  on entry, and carried in feet from then on.
+- A free-text row adds a thickness the tool did not observe, for a wall class
+  that exists in the building but was drawn too rarely to form a mode.
+- The exhaustive veto is a checkbox on this panel, worded as the consequence
+  rather than the mechanism: *"These are the only wall thicknesses in this
+  drawing — reject anything else."* It is unticked by default, and ticking it
+  shows how many runs would be rejected before the run starts.
+
 ### Why the veto is the valuable part
 
 A vetoed candidate never reaches the vision adjudicator, which only sees
