@@ -1011,12 +1011,32 @@ EOF
 
 ---
 
-## Deferred: the measurement GUI
+## Scope boundary with the scale-resolution spec
 
-Scoped in the spec's section 6, **not** in this plan. It extends
-`review_workbench.py` with a two-click measure tool rather than building a DXF
-viewer, and its one real obstacle is that the existing workbench renders
-region-local model feet from a completed `BuildingModel`, while calibration
-needs raw source coordinates from a `PrimitiveSet` before any scale exists. That
-needs its own plan once these tasks land, because `--scale-from-wall` is what
-the GUI will write into.
+`docs/superpowers/specs/2026-10-06-scale-resolution-design.md` supersedes the
+scale half of this plan's parent spec. The split is:
+
+**This plan keeps:**
+- Tasks 1, 2, 3, 5 — declared wall thicknesses, the exhaustive veto, the
+  pipeline threading and the thickness-versus-scale cross-check.
+- Task 4 — `scale_from_reviewed`, unchanged. It is the building block the scale
+  ladder sits on, and its contract is the same.
+- Task 6's `--scale-from-wall` flag and `_wall_length_measurements` helper,
+  unchanged. They are the input the ladder consumes.
+
+**The scale-resolution plan will own:**
+- `extracted_scale(ps, tolerance_in)` and the `ExtractedScale` record — reading
+  the drawing's own native `DIMENSION` entities and text consensus.
+- The four-rung ladder, and making a DXF run **fail** rather than silently fall
+  back to `$INSUNITS` when no scale is established.
+- The mandatory-one / invited-two assertion rule, and the override-with-warning
+  behaviour when an assertion contradicts the extracted dimensions.
+- `--measure-workbench`, `--trust-extracted-scale`, `--scale-tolerance-in`, and
+  the `--units-per-foot` help-text demotion.
+- `write_measure_workbench(ps, output_path)` and the two-click Measure tool.
+
+**Therefore in Task 6 Step 6 of this plan**, wire `--scale-from-wall` as a
+*fallback after* `--units-per-foot` exactly as written, and leave the extracted
+dimensions, the mandatory assertion and the failure path to the scale plan. The
+two changes compose: this plan makes an asserted length able to set a DXF's
+scale; the scale plan decides when one is required and what checks it.

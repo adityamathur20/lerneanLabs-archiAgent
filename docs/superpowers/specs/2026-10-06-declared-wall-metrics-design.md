@@ -154,6 +154,15 @@ they cost an LLM call, and removes them deterministically.
 
 ## 3. Scale from a wall length
 
+> **Superseded by `2026-10-06-scale-resolution-design.md`.** That spec keeps
+> `scale_from_reviewed` exactly as described below, and builds the full
+> resolution ladder around it: the drawing's own extracted dimensions as the
+> default source, one mandatory asserted length with a second invited rather
+> than required, a user assertion overriding the extractor on disagreement, and
+> the picker as the primary input route. Read that spec for the scale story;
+> this section remains because `scale_from_reviewed` is still the building block
+> and its contract has not changed.
+
 New function in `scale/verify.py`, leaving `infer_associated_scale` alone:
 
 ```python
@@ -264,6 +273,13 @@ geometry exclusion, junction resolution, space detection and IFC authoring are
 not touched by this spec.
 
 ## 6. GUI for picking the wall length — scoped, not built
+
+> **Superseded by `2026-10-06-scale-resolution-design.md` §5**, where the picker
+> is promoted from a later convenience to the primary way a scale assertion is
+> supplied, and gains a second-span invitation that shows the implied scale
+> against the tool's own extracted estimate as the length is typed. The analysis
+> below — that `review_workbench.py` already provides the viewer and that the
+> real work is a source-coordinate payload — is carried over unchanged.
 
 The user is far better placed to give a true length by drawing a line along a
 wall than by typing coordinates. **A new DXF viewer is not needed.**
