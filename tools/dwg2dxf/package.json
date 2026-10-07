@@ -1,0 +1,13 @@
+{
+  "name": "archiagent-dwg2dxf",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DWG to DXF through LibreDWG (WebAssembly). A separate GPL-3 program that archiAgent runs as a subprocess.",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "bin": { "dwg2dxf": "convert.mjs" },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@mlightcad/libredwg-web": "0.7.15"
+  }
+}

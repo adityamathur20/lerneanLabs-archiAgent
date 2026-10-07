@@ -49,20 +49,24 @@ Facts checked against the published 1.7.4 packages on 2026-10-07:
 
 ## Phase 0 — Gates (do these first; each is a go/no-go)
 
+> **Status 2026-10-07:** Tasks 0, 2 and 3a pass. Task 1 passes on 18 public samples (17 convert; one LibreDWG writer failure) and needs the private corpus plus ODA for its real verdict. Results and the findings that change later tasks: `docs/superpowers/notes/2026-10-07-phase0-gates.md`.
+
 ### Task 0: Fix the service's stale `--units-per-foot` flag (prerequisite)
 
 archiAgent commit `8a36972` removed `--units-per-foot`, but `service/archiagent_service/pipeline.py::build_command` still passes it when `options.units_per_foot` is set. Any such job exits 3 ("bad usage").
 
 **Files:** `archiViewer/service/archiagent_service/pipeline.py`, `service/archiagent_service/api.py` (StartRequest), `service/tests/test_pipeline.py`
 
-- [ ] Remove `units_per_foot` from `build_command` and `StartRequest`. Return 422 if a client still sends it, so the mismatch fails loudly.
-- [ ] Test: `build_command` never emits `--units-per-foot`.
+- [x] Remove `units_per_foot` from `build_command` and `StartRequest`. Return 422 if a client still sends it, so the mismatch fails loudly.
+- [x] Test: `build_command` never emits `--units-per-foot`.
+- [x] Also found: archiAgent refuses any DXF without `--scale-from-wall` or `--trust-extracted-scale`, so the service now accepts both (archiViewer `074dd36`).
 
 ### Task 1: Gate — LibreDWG conversion fidelity on the real corpus
 
 **Output:** `docs/superpowers/notes/2026-10-xx-libredwg-vs-oda.md`
 
-- [ ] Convert every corpus DWG with both ODA and LibreDWG (`tools/dwg2dxf` from Task 3, or the prototype script).
+- [x] Harness: `scripts/gates/dwg_fidelity.py`. Run on 18 public samples.
+- [ ] Convert every corpus DWG with both ODA and LibreDWG (needs the private corpus and ODA).
 - [ ] Run archiAgent on both DXFs. Compare per drawing: parse success, entity counts by type, wall count, region count, `acceptance`, and IFC element counts.
 - [ ] Note the worst file (largest, oldest DWG version, heavy blocks or hatches).
 - **Pass:** every drawing converts, and archiAgent's outputs match ODA's within the variance already seen run to run. **Fail:** keep ODA as the default and LibreDWG as an option, and record which drawings break.
@@ -73,21 +77,23 @@ Already proven on two public samples (`Arc.dwg` R2000, `example_2018.dwg`): conv
 
 This replaces Task 1 of the scale-resolution plan, which tested the `dxf` npm parser.
 
-- [ ] Load three corpus DXFs in `cad-simple-viewer` (Node or a headless page) and list `objectId` for each `LINE` and `LWPOLYLINE`.
-- [ ] Compare with ezdxf handles and with `SourceEntity.id` from `load_dxf`.
+- [x] Load DXFs with mlightcad's reader and list `objectId` for each `LINE` and `LWPOLYLINE` (`archiViewer/gates/handle-join.mjs`).
+- [x] Compare with `SourceEntity.id` from `load_dxf` (`scripts/gates/dxf_entities.py`). **Pass**: 9 files, every selectable entity joins.
 - **Pass:** ids match for top-level entities. **Fail:** fall back to matching by coordinates (the spec's weaker provenance), and Task 13 records points only.
 
 ### Task 3a: Gate — the mlightcad sub-app runs under the production CSP
 
-- [ ] Build a throwaway page with `cad-simple-viewer@1.7.4` + `three@0.172.0` and self-hosted fonts and workers.
-- [ ] Serve it with the exact CSP header from `deploy/Caddyfile` and open a corpus DXF. No CSP violations in the console. Text renders, which proves fonts load.
-- [ ] Record the gzipped bundle size (budget: note it, then decide).
+- [x] Build a page with `cad-simple-viewer@1.7.4` + `three@0.172.0` and self-hosted fonts and workers (`archiViewer/gates/csp-gate.mjs`).
+- [x] Serve it with the exact CSP header from `deploy/Caddyfile`. **Pass**: 0 violations, 0 third-party requests, text renders.
+- [x] Bundle: 3.86 MB raw / 1.04 MB gzip, one chunk.
 
 ---
 
 ## Phase 1 — Server-side DWG → DXF (archiAgent + worker)
 
 ### Task 3: `tools/dwg2dxf` — the Node converter, as a separate program
+
+> Built during Phase 0 for the Task 1 gate: `tools/dwg2dxf/convert.mjs`. Remaining here: the writer-failure fallback below.
 
 **Files (archiAgent):**
 - Create: `tools/dwg2dxf/package.json` (private, `"license": "GPL-3.0-or-later"`, exact pin `@mlightcad/libredwg-web@0.7.15`), `package-lock.json`, `convert.mjs`, `README.md`, `LICENSE` (GPL-3 text)
@@ -97,7 +103,9 @@ This replaces Task 1 of the scale-resolution plan, which tested the `dxf` npm pa
 - [ ] Calls `dwg_write_dxf(buffer)`. A `null` result, an empty output or a throw → exit 1 with a message on stderr. Never leave a partial `out.dxf`: write to a temp name and rename.
 - [ ] Exit codes: 0 ok, 1 conversion failed, 2 bad usage.
 - [ ] Converts one file per process, so a WASM crash or leak cannot outlive the job.
-- [ ] The README states it is a **separate program**, invoked as a subprocess and never linked into archiAgent, and that it is GPL-3 because LibreDWG is.
+- [x] The README states it is a **separate program**, invoked as a subprocess and never linked into archiAgent, and that it is GPL-3 because LibreDWG is.
+- [x] `--liftoff-only` set inside the script: 7.5 s → 0.3 s per file, byte-identical output.
+- [ ] Fallback when LibreDWG's DXF **writer** fails but its parser succeeds (seen on `example_2004.dwg`): parse → `@mlightcad/libredwg-converter` → `@mlightcad/data-model` `dxfOut`, inside this same program.
 
 ### Task 4: `archiagent.ingest.dwg` gains a LibreDWG backend
 
@@ -139,7 +147,7 @@ Today `plan.dxf` is stored only for DWG jobs. A DXF upload is kept as `source.dx
 
 - [ ] Its own `package.json` and lockfile keep `three@0.172` and `three@0.182` from colliding. They never share a bundle.
 - [ ] Copy the worker files from `node_modules` at build time (script, not hand-copied). Register them through `webworkerFileUrls`.
-- [ ] Vendor a **font subset** from `mlightcad/cad-data` into `cad/public/cad-data/fonts` and set `baseUrl` to `/cad/cad-data/`. Check each font's licence before vendoring, and list them in `cad/FONTS.md`.
+- [ ] **Do not vendor `mlightcad/cad-data` fonts.** That repository has no licence and its README says the fonts must be licensed by the user (Autodesk SHX, Microsoft SimSun). Ship our own `fonts.json` that aliases CAD font names (`simplex`, `romans`, `txt`, `arial`, …) onto openly licensed fonts (Liberation Sans / Noto, SIL OFL), as proven by the CSP gate. List them in `cad/FONTS.md`. Set `baseUrl` to `/cad/cad-data/`.
 - [ ] The sub-app shares `src/source.js` (API base, token, `SourceError`) by import, so auth stays in one place.
 
 ### Task 8: Open a job's drawing
@@ -174,7 +182,7 @@ Today `plan.dxf` is stored only for DWG jobs. A DXF upload is kept as `source.dx
 
 ### Task 11: Decide and configure the feature surface
 
-Default: **a viewer with measuring, not an editor**. Edits in the browser would not flow back to archiAgent, so offering them would mislead.
+Default: **a viewer with measuring, not an editor**, for now. Edits in the browser would not flow back to archiAgent, so offering them would mislead. **Editing is wanted later** (decided 2026-10-07): it needs its own plan for sending edits back (`dxfOut` of the edited database → a new job), so hide the editing commands here rather than removing them.
 
 - [ ] Keep: open, pan/zoom, layers (on/off/freeze/isolate), all measure commands, measurement import/export, switch background, reading mode.
 - [ ] Hide or unregister: draw and modify commands (`line`, `circle`, `move`, `erase`, …), `open` from local disk (the job's drawing is the only input), and the **`cad-agent-plugin`** (a natural-language CAD agent that we neither need nor allow network access for).
