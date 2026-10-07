@@ -18,7 +18,9 @@ def minimal_model():
 
 @pytest.fixture
 def stub_pipeline(monkeypatch):
-    source = SimpleNamespace(source_sha256="a" * 64)
+    # Carries the fields scale extraction reads, so the stub looks like a
+    # PrimitiveSet to _resolve_scale rather than raising on a missing attribute.
+    source = SimpleNamespace(source_sha256="a" * 64, entities=(), dimensions=())
     classifier = SimpleNamespace(classify=lambda stats: ())
     monkeypatch.setattr(cli, "_dxf_classifier", lambda *a, **kw: classifier)
     monkeypatch.setattr(cli, "load_dxf", lambda *a, **kw: (source, 12.))
@@ -37,7 +39,10 @@ def stub_pipeline(monkeypatch):
 
 
 def args(tmp_path, *extras):
-    return ["--dxfFilePath", "fixture.dxf", "--outputDir", str(tmp_path / "out"), "--rules", *extras]
+    # A 120-unit span stated as 10ft is 12 units/foot, matching what the
+    # stubbed load_dxf reports. Scale is no longer taken from a bare number.
+    return ["--dxfFilePath", "fixture.dxf", "--outputDir", str(tmp_path / "out"), "--rules",
+            "--scale-from-wall", "0", "0", "120", "0", "10ft", *extras]
 
 
 def test_whole_drawing_storey_flags_are_applied(stub_pipeline, tmp_path):
@@ -98,7 +103,9 @@ def test_invalid_flags_and_strict_acceptance_do_not_author(stub_pipeline, tmp_pa
 
 @pytest.mark.parametrize("input_kind", ["dxf", "pdf"])
 def test_region_scale_overrides_global_or_header(stub_pipeline, monkeypatch, tmp_path, input_kind):
-    source = SimpleNamespace(source_sha256="a" * 64)
+    # Carries the fields scale extraction reads, so the stub looks like a
+    # PrimitiveSet to _resolve_scale rather than raising on a missing attribute.
+    source = SimpleNamespace(source_sha256="a" * 64, entities=(), dimensions=())
     monkeypatch.setattr(cli, "load_dxf", lambda *a, **kw: (source, kw.get("units_per_foot") or 12.))
     monkeypatch.setattr(cli, "load_pdf", lambda *a, **kw: source)
     monkeypatch.setattr(cli, "_classifier", lambda *a: SimpleNamespace(classify=lambda stats: ()))
@@ -116,7 +123,10 @@ def test_region_scale_overrides_global_or_header(stub_pipeline, monkeypatch, tmp
         {"id": "detail-scale", "kind": "plan", "bounds": [0, 0, 10, 10], "elevation_ft": 0,
          "units_per_foot": 6},
         {"id": "global-scale", "kind": "plan", "bounds": [20, 0, 30, 10], "elevation_ft": 10}]))
-    argv = args(tmp_path, "--regions-file", str(regions), "--units-per-foot", "24")
+    # A region's own units_per_foot still wins; the region without one falls to
+    # the asserted span, which is 240 units stated as 10ft, so 24 units/foot.
+    argv = args(tmp_path, "--regions-file", str(regions))
+    argv[argv.index("120")] = "240"
     argv[0] = "--dxfFilePath" if input_kind == "dxf" else "--pdfFilePath"
     assert cli.main(argv) == cli.EXIT_OK
     assert observed == [6, 24]

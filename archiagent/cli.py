@@ -148,10 +148,18 @@ def _parser() -> argparse.ArgumentParser:
                         f"may examine (default {ESCALATION_CAP}). Each one costs "
                         f"a rendered image in the request; layers beyond the cap "
                         f"are reported but not examined.")
-    p.add_argument("--units-per-foot", type=float, default=None,
-                   metavar="FLOAT",
-                   help="drawing source units per foot; DXF header override or PDF calibration "
-                        "(12 for inches, 1 for feet, 304.8 for mm)")
+    p.add_argument("--scale-from-wall", nargs=5, action="append", default=None,
+                   metavar=("X1", "Y1", "X2", "Y2", "LENGTH"),
+                   help="two SOURCE-coordinate points along one wall and its true length, "
+                        "e.g. --scale-from-wall 0 0 120 0 \"10'-6\\\"\". Accepts 10, 10ft, "
+                        "3.05m, 3050mm, 120in. Repeatable: one span sets the scale, two or "
+                        "more can also verify it.")
+    p.add_argument("--trust-extracted-scale", action="store_true",
+                   help="accept the scale read from the drawing's own dimensions without "
+                        "asserting a wall length")
+    p.add_argument("--scale-tolerance-in", type=float, default=2.0, metavar="IN",
+                   help="how far two spans may disagree and still be agreeing on a scale "
+                        "(default 2.0)")
     p.add_argument("--rules", action="store_true", help="offline layer hints; no provider call")
     p.add_argument("--region", nargs=4, type=float, metavar=("XMIN","YMIN","XMAX","YMAX"), help="one source-coordinate plan window")
     p.add_argument("--regions-file", help="reviewed JSON regions: kind='plan', explicit elevations, optional units_per_foot per region")
@@ -341,7 +349,7 @@ def _unmatched_wall_names(names: list[str], stats) -> list[str]:
 
 
 def _validate_options(args) -> None:
-    for name in ("height", "units_per_foot", "timeout"):
+    for name in ("height", "scale_tolerance_in", "timeout"):
         value = getattr(args, name)
         if value is not None and (not math.isfinite(value) or value <= 0):
             raise ValueError(f"--{name.replace('_', '-')} must be finite and positive")
@@ -361,6 +369,91 @@ def _validate_options(args) -> None:
         raise ValueError("--freeze-only cannot be combined with replay or Blender export")
     if (args.freeze_only or args.replay_manifest or args.blender_package) and (args.inspect or args.classify_only or args.list_regions):
         raise ValueError("interpretation/export flags cannot be combined with inspection-only modes")
+
+
+def _wall_length_measurements(args) -> tuple:
+    """Turn each --scale-from-wall into a human-asserted Measurement."""
+    from archiagent.scale.verify import Measurement, parse_explicit_length
+    out = []
+    for n, (x1, y1, x2, y2, text) in enumerate(args.scale_from_wall or (), 1):
+        try:
+            start, end = (float(x1), float(y1)), (float(x2), float(y2))
+        except ValueError as exc:
+            raise ValueError(f"--scale-from-wall coordinates must be numbers: {exc}") from exc
+        expected = parse_explicit_length(text)
+        if expected is None:
+            raise ValueError(
+                f"--scale-from-wall length {text!r} is not a length; use 10, 10ft, "
+                "3.05m, 3050mm, 120in or 10'-6\"")
+        # Measurement refuses a non-positive span, so coincident points raise here.
+        out.append(Measurement(f"cli-wall-length-{n}", start, end, expected,
+                               "face", "cli-wall-length", None))
+    return tuple(out)
+
+
+def _unit_factor_hint(ratio):
+    """Name the ratio when it looks like a unit confusion rather than a disagreement."""
+    for factor, text in ((25.4, "millimetres read as inches"), (12.0, "feet read as inches"),
+                         (304.8, "millimetres read as feet"), (30.48, "centimetres read as feet"),
+                         (2.54, "centimetres read as inches")):
+        if abs(ratio - factor) / factor <= 0.01:
+            return f" -- that is {factor:g}, which usually means {text}"
+    return ""
+
+
+def _resolve_scale(args, ps, is_dxf, region, header_units):
+    """The chosen scale, the rung that supplied it, and any issues.
+
+    Never falls back to the file header on its own. A header is a declaration,
+    not a measurement, and two corpus drawings declare units they are not drawn
+    in -- which is how they produced confidently wrong models at exit 0.
+    """
+    from archiagent.scale.extracted import extracted_scale
+    from archiagent.scale.verify import scale_from_reviewed
+
+    issues = []
+    region_scale = getattr(region, "units_per_foot", None) if region is not None else None
+    if region_scale is not None:
+        return float(region_scale), "region", ()
+
+    extracted = extracted_scale(ps, args.scale_tolerance_in) if is_dxf else None
+    asserted = scale_from_reviewed(_wall_length_measurements(args), args.scale_tolerance_in)
+
+    if asserted is not None:
+        if extracted is not None and \
+                abs(asserted - extracted.units_per_foot) * 12 > args.scale_tolerance_in:
+            ratio = (max(asserted, extracted.units_per_foot)
+                     / min(asserted, extracted.units_per_foot))
+            issues.append(Issue(
+                "warn", "scale", "asserted_scale_overrides_extracted",
+                f"asserted wall length implies {asserted:g} units/foot; the drawing's own "
+                f"dimensions imply {extracted.units_per_foot:g} (from {extracted.support} "
+                f"agreeing). Using {asserted:g} as asserted. Ratio {ratio:.4g}"
+                + _unit_factor_hint(ratio)))
+        return asserted, "asserted", tuple(issues)
+
+    if args.trust_extracted_scale:
+        if extracted is None:
+            raise ValueError(
+                "--trust-extracted-scale was given but no scale could be read from this "
+                "drawing's dimensions. Assert one instead:\n"
+                "  --scale-from-wall X1 Y1 X2 Y2 LENGTH")
+        return extracted.units_per_foot, "extracted", tuple(issues)
+
+    if not is_dxf:
+        return header_units, "pdf", tuple(issues)
+
+    estimate = (f"  the drawing's own dimensions suggest {extracted.units_per_foot:g} "
+                f"units/foot (from {extracted.support} agreeing, unverified)\n"
+                if extracted is not None else
+                "  no usable dimensions were found in the drawing\n")
+    raise ValueError(
+        f"scale is not established for this drawing.\n{estimate}"
+        f"  the file header declares {header_units:g} units/foot\n"
+        "Identify one wall you can measure:\n"
+        "  --scale-from-wall X1 Y1 X2 Y2 LENGTH\n"
+        "or accept the drawing's own dimensions:\n"
+        "  --trust-extracted-scale")
 
 
 def _configuration(call, label):
@@ -604,7 +697,8 @@ def _main(argv: list[str] | None = None) -> int:
         return EXIT_USAGE
 
     if args.replay_manifest:
-        incompatible = {"--height", "--walls", "--rules", "--provider", "--model", "--units-per-foot",
+        incompatible = {"--height", "--walls", "--rules", "--provider", "--model",
+                        "--scale-from-wall", "--trust-extracted-scale",
                         "--region", "--regions-file", "--storey-name", "--elevation", "--measurements",
                         "--review-file", "--reference-file", "--ocr", "--workbench", "--page"}
         specified = {arg.split("=", 1)[0] for arg in argv}
@@ -706,8 +800,9 @@ def _main(argv: list[str] | None = None) -> int:
         # classification so --walls can be checked against the real layer
         # names, and the load is by far the most expensive step.
         if is_dxf:
-            ps, units_per_foot = load_dxf(input_path,
-                                          units_per_foot=args.units_per_foot)
+            # The header supplies a provisional value only; _resolve_scale
+            # judges it against the drawing's dimensions and the user's assertion.
+            ps, units_per_foot = load_dxf(input_path)
             stats = build_dxf_inventory(input_path, ps)
         else:
             ps = load_pdf(input_path, page=args.page)
@@ -715,9 +810,9 @@ def _main(argv: list[str] | None = None) -> int:
 
         if args.list_regions:
             from dataclasses import asdict
-            if not is_dxf and args.units_per_foot is None:
-                raise ValueError("PDF region proposals require --units-per-foot")
-            proposals = propose_regions(ps, units_per_foot if is_dxf else args.units_per_foot)
+            region_scale, _, _ = _resolve_scale(args, ps, is_dxf, None,
+                                                units_per_foot if is_dxf else None)
+            proposals = propose_regions(ps, region_scale)
             print(json.dumps([asdict(r) for r in proposals], indent=2))
             return EXIT_OK
 
@@ -800,9 +895,16 @@ def _main(argv: list[str] | None = None) -> int:
         models=[];sources=[]
         for plan_index, region in enumerate(regions, 1):
             source = select_region(ps,region) if region else ps
-            region_scale = region.units_per_foot if region is not None else None
-            selected_scale = region_scale if region_scale is not None else (
-                units_per_foot if is_dxf else args.units_per_foot)
+            selected_scale, scale_rung, scale_issues = _configuration(
+                lambda: _resolve_scale(args, source, is_dxf, region,
+                                       units_per_foot if is_dxf else None),
+                "scale")
+            classifier_issues.extend(scale_issues)
+            if scale_rung == "asserted" and len(_wall_length_measurements(args)) == 1 \
+                    and not any(i.code == "asserted_scale_overrides_extracted" for i in scale_issues):
+                print("note: scale set from one asserted length and nothing in the drawing "
+                      "corroborates it; a second span would allow it to be verified",
+                      file=sys.stderr)
             if args.ocr:
                 if selected_scale is None:
                     raise ValueError("--ocr requires explicit source units for a vector PDF")

@@ -89,7 +89,8 @@ def test_current_validation_not_deleted_by_frozen_issues(tmp_path):
 
 def test_replay_refuses_geometry_overrides_and_print_prompt_is_offline(tmp_path,capsys):
     source,model=source_model(tmp_path);path=save_manifest([model],tmp_path/'frozen.json')
-    for flags in (['--height','10'],['--rules'],['--ocr'],['--units-per-foot=12']):
+    for flags in (['--height','10'],['--rules'],['--ocr'],
+                  ['--scale-from-wall','0','0','120','0','10ft']):
         assert cli.main(['--dxfFilePath',str(source),'--outputDir',str(tmp_path/'out'),
                          '--replay-manifest',str(path),*flags])==cli.EXIT_USAGE
     assert cli.main(['--print-interpretation-prompt'])==0
@@ -130,8 +131,11 @@ def test_real_dxf_freeze_replay_preserves_rotated_wall_hole(tmp_path,unit_code,u
     hatch.paths.add_polyline_path(transformed(inner),is_closed=True,flags=0)
     source=tmp_path/'generated plan.dxf';doc.saveas(source)
     out=tmp_path/'extract'
+    # The header alone no longer establishes scale, so assert it: a span of
+    # 10*upf source units is 10 feet, which is upf units per foot in any system.
+    scale_flags=['--scale-from-wall','0','0',str(10*upf),'0','10ft']
     assert cli.main(['--dxfFilePath',str(source),'--outputDir',str(out),'--walls','A-WALL',
-                     '--height','9','--elevation','0','--freeze-only'])==0
+                     *scale_flags,'--height','9','--elevation','0','--freeze-only'])==0
     assert not (out/(source.stem+'.ifc')).exists()
     frozen=out/(source.stem+'.interpretation.json')
     models,_=read_manifest(frozen,source);model=models[0]

@@ -228,6 +228,30 @@ def infer_associated_scale(measurements, tolerance_in=2.0):
     return scale
 
 
+ASSERTED_SOURCES = ("reviewed-measurement", "cli-wall-length")
+
+
+def scale_from_reviewed(measurements, tolerance_in=2.0):
+    """Source units per foot from human-asserted lengths; one span is enough.
+
+    infer_associated_scale needs two independent spans because it works from
+    dimension text the pipeline associated itself, which can attach to the wrong
+    geometry. A length a reviewer states about a span they chose is an
+    assertion, not an inference, so one calibrates. It still cannot VERIFY:
+    scale_verified requires two distinct verified spans, and that is unchanged.
+    """
+    _positive(tolerance_in, "dimension tolerance_in")
+    asserted=[m for m in measurements if m.source in ASSERTED_SOURCES
+              and m.expected_ft is not None and m.expected_ft>0]
+    if not asserted:return None
+    ratios=sorted(_span(m.start,m.end,m.axis)/m.expected_ft for m in asserted)
+    scale=ratios[len(ratios)//2]
+    _positive(scale,"asserted source units per foot")
+    if any(abs(_span(m.start,m.end,m.axis)/scale-m.expected_ft)*12>tolerance_in for m in asserted):
+        raise ValueError("asserted wall lengths disagree on scale; review the lengths or the units")
+    return scale
+
+
 def verify_dimensions(measurements,walls,units_per_foot,tolerance_in=2.0):
     _positive(units_per_foot, "source units per foot")
     _positive(tolerance_in, "dimension tolerance_in")
