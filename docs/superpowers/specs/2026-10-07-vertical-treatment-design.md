@@ -155,7 +155,8 @@ someone may not notice.
   `POOL` text in the wrong polygon, this spec confidently sinks the wrong room.
   That argues for showing treatments in the review output, where a sunken living
   room is immediately obvious.
-- **Terrace as `OPEN` may be too strong.** A terrace often does have a slab —
-  it is a roof. Marking it `OPEN` suppresses that slab. This is flagged rather
-  than resolved: `TERRACE` has 18 hits across 5 files, so it is worth a
-  deliberate decision before implementation rather than a default guess.
+- ~~**Terrace as `OPEN` may be too strong.**~~ **Resolved 2026-10-07:** terrace
+  stays `OPEN`. The staged workflow settles it — roof and terrace insertion is a
+  later, separate step, so a terrace's slab arrives from the roof stage rather
+  than from the room stage. `OPEN` is therefore correct *at this stage*, not an
+  omission. If roof insertion is ever folded back into one pass, revisit this.

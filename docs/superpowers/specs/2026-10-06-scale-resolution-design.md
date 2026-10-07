@@ -339,16 +339,45 @@ never depends on a registry. Adding a JS build step to a Python project is a
 real cost; bundling to a single inlined asset preserves the
 no-CDN-no-service property that matters for confidential drawings.
 
-**Two ambiguities the UI must resolve explicitly**, because both fail silently:
+### What the measurement is, and is not
 
-1. **Which length is being stated** — the selected line's endpoint-to-endpoint
-   length, or the room's clear dimension? They differ by half a wall thickness
-   at each end, the same error class as room labels. `Measurement.basis`
-   (`face` | `centerline`) already exists; the GUI asks rather than assumes.
-2. **One polyline often spans several rooms**, so the selected entity may not be
-   the wall the user means. The UI highlights the selected extent and shows the
-   **implied scale live** as the length is typed, so what is being asserted is
-   visible before it is committed.
+This input is a **ratio and nothing else**:
+
+```
+units_per_foot = endpoint-to-endpoint span in source units / stated length in feet
+```
+
+The selected entity carries no architectural meaning here. A wall line, a plot
+boundary, a car outline and a dimension leader all calibrate equally well. The
+user selects any entity, states how long that entity is, and the tool divides.
+
+An earlier draft of this section asked the UI to distinguish a wall's `face`
+from its `centerline`, and worried that a polyline may span several rooms.
+**Both were wrong.** `Measurement.basis` matters when *verifying a wall* against
+an expected dimension, where thickness changes the comparison; it has no bearing
+on converting units. And an entity spanning several rooms is not a problem,
+because the user is stating the length of the highlighted entity, not of a room.
+
+**Three real constraints remain**, none of which need the entity to be a wall:
+
+1. **A multi-vertex polyline has two lengths** — endpoint-to-endpoint, and the
+   path along its segments. They are equal only for a straight run. The
+   definition is endpoint-to-endpoint, and the UI makes that self-evident by
+   **drawing the span it is measuring**: a straight overlay line between the two
+   endpoints, as AutoCAD and Blender measure tools do. Showing it beats
+   documenting it.
+2. **Closed and circular entities are degenerate.** A closed polyline or a
+   circle has an endpoint-to-endpoint span of about zero, since the first and
+   last vertices coincide. Selecting one for measurement is refused with that
+   reason, rather than producing a division by zero or an absurd scale.
+3. **The span is measured in XY.** `load_dxf` projects to the drawing plane and
+   warns on non-zero elevation, so a browser measuring a 3D distance on an
+   entity with Z extent would disagree with the pipeline. The picker measures
+   the XY projection.
+
+The implied scale is shown live as the length is typed, next to whatever the
+drawing's own dimensions imply, so a mistyped length is visible at the moment it
+is cheapest to fix.
 
 ### Superseded: measured case for keeping SVG
 
