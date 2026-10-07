@@ -215,9 +215,30 @@ Order of attempts:
    error, which on a 12ft room at 9in walls is 6% — enough to matter.
    Without a declared thickness this source is still usable but is recorded with
    a wider tolerance.
-4. **Text consensus.** `resolve_scale(extract_dimensions(ps), candidate_runs(ps, layers))`,
-   the mechanism the PDF path already uses. The weakest source, because it
-   matches any dimension-shaped text to any candidate run. `basis="text-consensus"`.
+4. **Dimstyle factor**, when no dimension carries usable text — which measurement
+   showed is the normal case, not the exception. A generated dimension's text is
+   rendered at display time and is **not stored in the file**: Aiims Road's 424
+   dimensions all carry `text=''`. What they do carry is `DIMLFAC`, the ratio
+   between the drawing's unit and the unit the drafter reads in. Where that
+   ratio is unambiguous it pins the drawing's unit: 0.0254 is inches per metre,
+   so the drawing is in inches. A factor of 1 is every unit displayed as itself
+   and identifies nothing, so it is refused rather than guessed.
+   `basis="dimstyle-factor"`. On Aiims Road this yields 12.0 from 159
+   dimensions, matching its header independently.
+5. ~~**Text consensus.**~~ **Rejected on measurement.** Feeding the parsed
+   texts to `resolve_scale(..., candidate_runs(...))` was tried and is **not**
+   used. Against a known truth of 12 units/foot it was right once in seven
+   drawings — 0.936, 5.250, 6.700, 11.976, 4.863, 3.947, 4.526 — and every run
+   reported `matched_count` equal to its full text count, so the wrong answers
+   arrive with complete confidence. The cause is structural: a room label states
+   a room's **clear interior**, which is not the length of any single drawn
+   line, so matching labels to run lengths is numerology. A confidently wrong
+   scale is worse than none, because every foot-denominated threshold downstream
+   inherits it.
+
+   The same labels remain valuable matched to an **enclosure** rather than a
+   run, which is the room-label source belonging to Sub-project B. Parsing them
+   is therefore still worth doing; feeding them to the run matcher is not.
 
 Returns `None` when nothing agrees. `rejected` always travels so the report can
 explain why a drawing full of dimensions still produced no scale.

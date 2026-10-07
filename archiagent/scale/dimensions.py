@@ -79,10 +79,36 @@ def parse_dimension(s: str) -> float | None:
     return feet
 
 
+# A room label states both sides at once: 14'-9"x12'-4½" is the commonest
+# dimension-bearing text in this corpus. Drafters separate the halves with an
+# ASCII x, a capital X or the multiplication sign, and the whole string parses
+# as nothing unless it is split first.
+_PAIR_SEPARATOR = re.compile(r"[xX×*]")
+
+
+def parse_dimension_group(s: str) -> tuple[float, ...]:
+    """Every dimension stated in one string, left to right.
+
+    A lone dimension yields one value and a room label yields two. Halves that
+    are not dimensions are dropped, so `14'-9"x SEE PLAN` still yields its one
+    real value.
+    """
+    whole = parse_dimension(s)
+    if whole is not None:
+        return (whole,)
+    found = []
+    for part in _PAIR_SEPARATOR.split(s):
+        feet = parse_dimension(part)
+        if feet is not None:
+            found.append(feet)
+    return tuple(found)
+
+
 def extract_dimensions(ps: PrimitiveSet) -> tuple[DimensionText, ...]:
     out: list[DimensionText] = []
     for t in ps.texts:
-        feet = parse_dimension(t.text)
-        if feet is not None:
+        for feet in parse_dimension_group(t.text):
+            # Both halves keep the original text: provenance is the label the
+            # reviewer can find on the drawing, not the fragment it was cut to.
             out.append(DimensionText(text=t.text, feet=feet, center=t.center()))
     return tuple(out)

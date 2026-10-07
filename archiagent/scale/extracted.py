@@ -23,6 +23,35 @@ from archiagent.scale.verify import parse_explicit_length
 USABLE_TYPES = ("linear", "aligned", "rotated")
 NEUTRAL_FACTORS = ("", "1", "1.0")
 
+# Metres per unit, for the units a floor plan is actually drawn in.
+UNITS_IN_METRES = {"in": 0.0254, "ft": 0.3048, "mm": 0.001, "cm": 0.01, "m": 1.0}
+FACTOR_TOLERANCE = 0.01
+
+
+def dimstyle_units_per_foot(factor: float) -> float | None:
+    """The drawing's unit implied by a dimstyle linear factor, or None.
+
+    DIMLFAC multiplies a measured span to produce the number the CAD displays,
+    so it is the ratio between the drawing's unit and the unit the drafter reads
+    in. Aiims Road's 424 dimensions all carry 0.0254 and no text at all: that is
+    inches per metre, so the drawing is in inches and displays metres.
+
+    Only an unambiguous factor is accepted. A factor of 1 is every unit shown as
+    itself and identifies nothing, so it returns None rather than guessing.
+    """
+    if isinstance(factor, bool) or not isinstance(factor, (int, float)):
+        return None
+    if not math.isfinite(factor) or factor <= 0:
+        return None
+    drawn = set()
+    for drawing_unit, drawing_m in UNITS_IN_METRES.items():
+        for display_m in UNITS_IN_METRES.values():
+            if abs(factor - drawing_m / display_m) <= FACTOR_TOLERANCE * factor:
+                drawn.add(drawing_unit)
+    if len(drawn) != 1:
+        return None
+    return UNITS_IN_METRES["ft"] / UNITS_IN_METRES[drawn.pop()]
+
 
 @dataclass(frozen=True)
 class ExtractedScale:
@@ -110,4 +139,31 @@ def extracted_scale(ps, tolerance_in: float = 2.0) -> ExtractedScale | None:
                               tuple((d.start, d.end) for d, _, _ in supporting),
                               len(supporting), basis,
                               tuple(sorted(rejected + unused)))
-    return None
+    return _from_dimstyle(ps, rejected)
+
+
+def _from_dimstyle(ps, rejected):
+    """Fall back to what the dimstyle factors say the drawing's unit is.
+
+    This is weaker than a measured ratio and is used only when no dimension
+    carries usable text -- which is the normal case, because generated text is
+    rendered at display time and is not stored in the file at all.
+    """
+    meta = _metadata(ps)
+    implied = {}
+    for d in ps.dimensions:
+        if d.measurement_type not in USABLE_TYPES:
+            continue
+        raw = meta.get(d.id, {}).get("dimstyle_dimlfac", "")
+        try:
+            factor = float(raw)
+        except (TypeError, ValueError):
+            continue
+        scale = dimstyle_units_per_foot(factor)
+        if scale is not None:
+            implied.setdefault(round(scale, 6), []).append(d)
+    if len(implied) != 1:
+        return None
+    scale, supporting = next(iter(implied.items()))
+    return ExtractedScale(scale, tuple((d.start, d.end) for d in supporting),
+                          len(supporting), "dimstyle-factor", tuple(sorted(rejected)))
