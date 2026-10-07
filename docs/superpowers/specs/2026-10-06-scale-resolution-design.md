@@ -90,7 +90,7 @@ Resolved once per region, in this order:
 
 | Rung | Source | User effort | Can verify |
 |---|---|---|---|
-| 1 | `--units-per-foot`, or a region's `units_per_foot` | expert override | no |
+| 1 | a reviewed region's `units_per_foot` | reviewed data | no |
 | 2 | **Asserted wall length(s)** — mandatory, at least one | pick 1 wall, 2 invited | with 2 spans, or 1 + a corroborating extracted dimension |
 | 3 | **Extracted dimensions** — native `DIMENSION` first, then text consensus | none | with ≥2 agreeing |
 | 4 | `$INSUNITS` header | none | never — cross-check only |
@@ -230,23 +230,44 @@ asserted one.
 
 ```
 --scale-from-wall X1 Y1 X2 Y2 LENGTH   at least one required for DXF; repeatable
---measure-workbench                    write the picker HTML and exit
+--scale-from-entity HANDLE LENGTH      the same assertion, tied to a DXF entity handle;
+                                       what the picker emits
+--measure-workbench                    write the picker and exit
 --trust-extracted-scale                accept the drawing's own dimensions without an assertion
---units-per-foot FLOAT                 expert override; no longer the expected path
 --scale-tolerance-in FLOAT             agreement tolerance, default 2.0
 ```
 
-`--units-per-foot`'s help text changes to say it is an override and that
-`--scale-from-wall` or `--measure-workbench` is the normal route.
+### `--units-per-foot` is removed from the CLI
+
+The flag is **deleted**, not demoted. It was rung 1 — beating every other
+source, carrying no provenance and never cross-checked — which is exactly how
+`PLAN.dxf` and `Floor Plan.dxf` produced confidently wrong models. A bare
+number that silently wins is the failure mode, not a convenience.
+
+What remains:
+
+- **The Python parameter** `extract_from_dxf(units_per_foot=...)` stays. It is
+  how tests and library callers inject a known scale, and it is not a user
+  surface.
+- **`PlanRegion.units_per_foot` stays**, because a reviewed regions file is the
+  established way to give different plans in one DXF different scales. It is
+  reviewed data with an author, not an unattributed flag.
+
+Anyone who genuinely knows the scale states it as an assertion about a span they
+can point at, which is self-documenting, attributable and cross-checked against
+the drawing's own dimensions. That is strictly better provenance than `12`.
+
+Migration: the two corpus drawings that today need `--units-per-foot 12` move to
+`--trust-extracted-scale` or one picked wall.
 
 ### What the GUI exposes, and what it does not
 
 The flags above are the machine surface. The user does not type them.
 
-- **`--units-per-foot` is not in the GUI at all.** It is an expert CLI override
-  and nothing more. Scale is always computed internally, from the extracted
-  dimensions or from the wall length the user draws. Asking a person how many
-  drawing units make a foot is asking them to describe the file's internals.
+- **`units-per-foot` appears nowhere a user can see**, and the CLI flag is gone
+  entirely. Scale is always computed internally, from the extracted dimensions
+  or from the wall the user selects. Asking a person how many drawing units make
+  a foot is asking them to describe the file's internals.
 - **`--trust-extracted-scale` is a tick-box**, labelled in the user's terms —
   *"Use the dimensions already in this drawing"* — showing the scale that was
   extracted and how many dimensions agreed, for example *"12 units/foot, from 14
@@ -274,7 +295,62 @@ viewer needing no CDN or service, and already has the parts.
 | export JSON | `download()` and the export buttons |
 | attribution | reviewer field, draft/reviewed status |
 
-### Measured: why SVG stays, rather than adopting a WebGL DXF viewer
+### Revised 2026-10-07: the picker is `three-dxf-viewer`, not the SVG workbench
+
+The SVG analysis below stands on its measurements and is kept for the record,
+but its conclusion is **reversed**. It compared the wrong thing: it asked
+whether SVG could render a drawing fast enough, when the requirement is that the
+user **select a wall** and have the span taken from that entity's own geometry.
+
+Selecting an entity, rather than clicking two points, changes the quality of the
+input:
+
+- **Click precision stops mattering.** The span comes from the entity's
+  vertices, not from where a cursor landed.
+- **The assertion becomes durable.** Recording the DXF **handle** of the chosen
+  entity makes the measurement re-checkable on a later run and survives
+  re-ingestion, where a bare coordinate pair does not.
+- **Snapping is free.** The library stores vertices for exactly this.
+
+`ieskudero/three-dxf-viewer` provides it: **MIT**, dependencies `dxf@5.3.0`
+(MIT), `three` and `rtf.js`, with `Select`, `Hover`, `Snap` and `Merger`
+utilities and layer show/hide. The licence chain is cleaner than both
+alternatives — no MPL file-level copyleft as in `vagran/dxf-viewer`, and no
+DWG parser pulling GPL-3 LibreDWG in as `mlightcad/cad-viewer` risks. It has no
+measure tool; that is what gets built on top.
+
+It also removes the payload problem rather than mitigating it: the browser
+parses the `.dxf` directly, so no SVG is generated, transferred or held in a
+DOM, and WebGL buffers replace 17k–60k nodes.
+
+**Gate before committing to this — a half-day spike.** The JS parser and
+`ezdxf` must agree on entity identity, or the selected wall cannot be tied back
+to anything. `load_dxf` uses the DXF handle as the source id for top-level
+entities ([dxf_vector.py:231](../../../archiagent/ingest/dxf_vector.py#L231))
+and the `dxf` parser exposes handles, so **handles are the join key**. Prove on
+three corpus drawings that the handle of a selected `LINE`/`LWPOLYLINE` matches
+a `SourceEntity.id`. If it does, build this. If it does not, fall back to
+matching by coordinates and accept the weaker provenance.
+
+**Known risks.** `three-dxf-viewer` last published 1.0.44 on 2025-09-04 after 38
+releases since 2023 — roughly a year quiet. MIT means it can be vendored and
+patched, which is the mitigation, and the vendored bundle is committed so a run
+never depends on a registry. Adding a JS build step to a Python project is a
+real cost; bundling to a single inlined asset preserves the
+no-CDN-no-service property that matters for confidential drawings.
+
+**Two ambiguities the UI must resolve explicitly**, because both fail silently:
+
+1. **Which length is being stated** — the selected line's endpoint-to-endpoint
+   length, or the room's clear dimension? They differ by half a wall thickness
+   at each end, the same error class as room labels. `Measurement.basis`
+   (`face` | `centerline`) already exists; the GUI asks rather than assumes.
+2. **One polyline often spans several rooms**, so the selected entity may not be
+   the wall the user means. The UI highlights the selected extent and shows the
+   **implied scale live** as the length is typed, so what is being asserted is
+   visible before it is committed.
+
+### Superseded: measured case for keeping SVG
 
 The concern that generating SVG is slow was tested rather than assumed. On this
 corpus, building the full SVG path data costs **0.11–0.24 s**. It is not the
@@ -306,14 +382,13 @@ a parser whose transitive licence must be checked before adoption, since
 LibreDWG is GPL-3 and this project already evaluated and rejected LibreDWG. The
 `dxf` npm parser is MIT but is a parser only, with no viewer or measure tool.
 
-**Decision: keep the self-contained HTML/SVG workbench, with a filtered
-payload.** Adopting a JS viewer would add a build toolchain to a Python project,
-require a transitive-licence review before any commercial use, and forfeit the
-property stated in `review_workbench.py`'s first line — *"no web service or CDN
-required"* — which matters when the thing being rendered is a client's
-confidential drawing. The measured numbers do not justify that trade. Revisit
-only if a drawing appears whose filtered payload is itself too large, and record
-the figure that forced it.
+~~**Decision: keep the self-contained HTML/SVG workbench, with a filtered
+payload.**~~ **Reversed above.** The measurements were right and the conclusion
+was wrong: rendering speed was never the binding requirement. Selecting a wall
+entity — which SVG-of-filtered-primitives cannot do well, because the filtering
+discards the entity identity the assertion needs — is. The licence review that
+this paragraph treated as a cost came back clean for `three-dxf-viewer` (MIT
+throughout), and bundling preserves the no-CDN property after all.
 
 The work:
 
