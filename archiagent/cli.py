@@ -151,7 +151,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--scale-from-wall", nargs=5, action="append", default=None,
                    metavar=("X1", "Y1", "X2", "Y2", "LENGTH"),
                    help="two SOURCE-coordinate points along one wall and its true length, "
-                        "e.g. --scale-from-wall 0 0 120 0 \"10'-6\\\"\". Accepts 10, 10ft, "
+                        "e.g. --scale-from-wall 0 0 120 0 \"10'-6\\\"\". Accepts 10', 10ft, "
                         "3.05m, 3050mm, 120in. Repeatable: one span sets the scale, two or "
                         "more can also verify it.")
     p.add_argument("--trust-extracted-scale", action="store_true",
@@ -387,7 +387,7 @@ def _wall_length_measurements(args) -> tuple:
         expected = parse_explicit_length(text)
         if expected is None:
             raise ValueError(
-                f"--scale-from-wall length {text!r} is not a length; use 10, 10ft, "
+                f"--scale-from-wall length {text!r} is not a length; use 10', 10ft, "
                 "3.05m, 3050mm, 120in or 10'-6\"")
         # Measurement refuses a non-positive span, so coincident points raise here.
         out.append(Measurement(f"cli-wall-length-{n}", start, end, expected,
