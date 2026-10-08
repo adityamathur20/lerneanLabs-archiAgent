@@ -4,7 +4,9 @@
 
 **Goal:** Let a user open their uploaded DWG/DXF in archiViewer as a 2D CAD drawing (pan, zoom, layers, measure), select a wall to set the scale, and have every DWG converted to DXF on the VPS so the browser and archiAgent read the same file.
 
-**Architecture:** DWG → DXF happens once, on the worker, through a small Node program wrapping `@mlightcad/libredwg-web` (GPL-3, server-only). The worker stores the result as `plan.dxf`. The browser only ever receives DXF and renders it with mlightcad's MIT packages, in a **separate sub-app** of archiViewer (its own `package.json`), because mlightcad needs `three@0.172.x` and the IFC viewer uses `three@0.182`. Stage A ships `@mlightcad/cad-simple-viewer`; Stage B swaps in `@mlightcad/cad-viewer` (Vue 3 + Element Plus UI, like https://mlightcad.com/cad-viewer/cad-viewer/) on the same engine.
+> **Decision 2026-10-08: the converter is the ODA File Converter, not LibreDWG.** LibreDWG's DXF writer failed Phase 0 on the real corpus (`docs/superpowers/notes/2026-10-08-phase0-real-dwg-results.md`). ODA's Linux build runs in the worker image under xvfb (archiViewer `edf993e`). Phase 1 below is superseded by that; `tools/dwg2dxf` is kept only as the gate's comparison tool. **Stage A is built** (archiViewer `cb97149`, branch `feat/oda-dwg-and-cad-viewer`).
+
+**Architecture:** DWG → DXF happens once, on the worker. (Originally planned through a small Node program wrapping `@mlightcad/libredwg-web`; replaced by ODA, see the decision above.) The worker stores the result as `plan.dxf`. The browser only ever receives DXF and renders it with mlightcad's MIT packages, in a **separate sub-app** of archiViewer (its own `package.json`), because mlightcad needs `three@0.172.x` and the IFC viewer uses `three@0.182`. Stage A ships `@mlightcad/cad-simple-viewer`; Stage B swaps in `@mlightcad/cad-viewer` (Vue 3 + Element Plus UI, like https://mlightcad.com/cad-viewer/cad-viewer/) on the same engine.
 
 **Tech Stack:** Node 22, `@mlightcad/libredwg-web@0.7.15` (server only), `@mlightcad/cad-simple-viewer@1.7.4` → `@mlightcad/cad-viewer@1.7.4`, `three@0.172.0`, Vite, Vue 3 + Element Plus (Stage B), Python 3.12 / pytest (archiAgent, service).
 
@@ -91,6 +93,8 @@ This replaces Task 1 of the scale-resolution plan, which tested the `dxf` npm pa
 
 ## Phase 1 — Server-side DWG → DXF (archiAgent + worker)
 
+> **Superseded 2026-10-08 by ODA.** Done instead: ODA 27.9 for Linux in `Dockerfile.worker` (checksum-pinned, xvfb wrapper, `ARCHIAGENT_ODA_CONVERTER`), `ARCHIAGENT_SERVICE_DWG_ENABLED` on the api, `plan.dxf` for every DXF/DWG job (Task 6). Tasks 3–5 below are not to be built.
+
 ### Task 3: `tools/dwg2dxf` — the Node converter, as a separate program
 
 > Built during Phase 0 for the Task 1 gate: `tools/dwg2dxf/convert.mjs`. Remaining here: the writer-failure fallback below.
@@ -138,6 +142,8 @@ Today `plan.dxf` is stored only for DWG jobs. A DXF upload is kept as `source.dx
 ---
 
 ## Phase 2 — Stage A: `cad-simple-viewer` in archiViewer
+
+> **Built 2026-10-08** (archiViewer `cb97149`). Checked with `scripts/cad-check.mjs` on three corpus plans. Found on the way: `/cad` without a slash broke asset URLs (fixed: Vite base + Caddy redirect); mlightcad's progress overlay swallows clicks ~20 s past `waitUntilIdle` on large plans (tools stay disabled until it hides, via its internal `onOpenProgressHidden`, safe only because mlightcad is pinned exactly).
 
 ### Task 7: The `cad/` sub-app
 
