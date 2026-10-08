@@ -3,6 +3,10 @@
 Header units are a declaration, not a verified scale. Curves are tessellated
 with a maximum chord deviation of 0.001 foot at the selected working scale;
 their analytic source geometry is retained for interpretation and review.
+
+A header that declares no unit is not an error here: the scale ladder
+(cli._resolve_scale) decides from an asserted wall or the drawing's own
+dimensions. Without a unit the tolerance is a fraction of the drawing's size.
 """
 from __future__ import annotations
 
@@ -27,6 +31,21 @@ INSUNITS_PER_FOOT: dict[int, float] = {
 }
 
 
+#: With no unit to express 0.001 ft in, the chord tolerance is this fraction of
+#: the drawing's larger extent. For a 100 ft plan drawn in inches (1200 units)
+#: that is 0.012 units, exactly what a 12 units/foot header gives.
+UNITLESS_TOLERANCE = 1e-5
+
+
+def _larger_extent(doc) -> float:
+    from ezdxf import bbox
+    try:
+        box = bbox.extents(doc.modelspace(), fast=True)
+    except Exception:                       # noqa: BLE001 - only sizes a tolerance
+        return 0.0
+    return max(box.size.x, box.size.y) if box.has_data else 0.0
+
+
 def units_from_header(doc) -> float | None:
     return INSUNITS_PER_FOOT.get(doc.header.get("$INSUNITS", 0))
 
@@ -36,16 +55,22 @@ def _xy(v) -> tuple[float, float]:
 
 
 def load_dxf(path: str | Path,
-             units_per_foot: float | None = None) -> tuple[PrimitiveSet, float]:
+             units_per_foot: float | None = None) -> tuple[PrimitiveSet, float | None]:
+    """The drawing, and the units per foot it was loaded at: the explicit
+    `units_per_foot` if given, else the header's, else None (no unit declared)."""
     path = Path(path)
     doc = ezdxf.readfile(str(path))
     declared = units_from_header(doc)
+    if units_per_foot is not None and (not math.isfinite(units_per_foot) or units_per_foot <= 0):
+        # An explicit value is a caller's claim; a bad one is never replaced
+        # by the header.
+        raise DxfUnitsError(f"{path.name}: units_per_foot must be finite and positive, "
+                            f"got {units_per_foot!r}")
     upf = units_per_foot if units_per_foot is not None else declared
-    if upf is None or not math.isfinite(upf) or upf <= 0:
-        raise DxfUnitsError(
-            f"{path.name}: supply a finite positive --units-per-foot "
-            "(12 for inches, 1 for feet, 304.8 for mm).")
-    tolerance = 0.001 * upf
+    if upf is not None:
+        tolerance = 0.001 * upf
+    else:
+        tolerance = UNITLESS_TOLERANCE * _larger_extent(doc) or 0.001
     prims: list[Primitive] = []
     texts: list[TextItem] = []
     entities: list[SourceEntity] = []
@@ -225,4 +250,4 @@ def load_dxf(path: str | Path,
     xs, ys = zip(*points) if points else ((0.0,), (0.0,))
     return PrimitiveSet(tuple(prims), tuple(texts), max(xs)-min(xs), max(ys)-min(ys),
                         str(path), dxf_source_digest(path), tuple(entities), tuple(dimensions),
-                        tuple(warnings), declared), float(upf)
+                        tuple(warnings), declared), (float(upf) if upf is not None else None)

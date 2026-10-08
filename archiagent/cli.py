@@ -151,7 +151,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--scale-from-wall", nargs=5, action="append", default=None,
                    metavar=("X1", "Y1", "X2", "Y2", "LENGTH"),
                    help="two SOURCE-coordinate points along one wall and its true length, "
-                        "e.g. --scale-from-wall 0 0 120 0 \"10'-6\\\"\". Accepts 10, 10ft, "
+                        "e.g. --scale-from-wall 0 0 120 0 \"10'-6\\\"\". Accepts 10', 10ft, "
                         "3.05m, 3050mm, 120in. Repeatable: one span sets the scale, two or "
                         "more can also verify it.")
     p.add_argument("--trust-extracted-scale", action="store_true",
@@ -173,6 +173,10 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--ocr", action="store_true", help="explicitly run local macOS Vision OCR on vector outlines (requires cv extra)")
     p.add_argument("--symbol-library", metavar="PATH", help="reviewed symbol library JSON; replaces the bundled library for this run")
     p.add_argument("--no-symbol-library", action="store_true", help="skip library symbol matching entirely")
+    p.add_argument("--prepare", action="store_true",
+                   help="convert a DWG, write <stem>.scale.json (the header's units, the scale the "
+                        "drawing's own dimensions imply, extents) and stop: no classification, "
+                        "no LLM, no IFC. What a UI needs to show a drawing and ask for its scale")
     p.add_argument("--harvest-symbols", action="store_true", help="propose library candidates from this drawing's blocks and exit; writes candidates and previews under the cache directory")
     p.add_argument("--require-accepted", action="store_true", help="write review report but refuse IFC when acceptance errors remain")
     p.add_argument("--freeze-only", action="store_true", help="save interpretation, review and overlays without authoring IFC")
@@ -383,7 +387,7 @@ def _wall_length_measurements(args) -> tuple:
         expected = parse_explicit_length(text)
         if expected is None:
             raise ValueError(
-                f"--scale-from-wall length {text!r} is not a length; use 10, 10ft, "
+                f"--scale-from-wall length {text!r} is not a length; use 10', 10ft, "
                 "3.05m, 3050mm, 120in or 10'-6\"")
         # Measurement refuses a non-positive span, so coincident points raise here.
         out.append(Measurement(f"cli-wall-length-{n}", start, end, expected,
@@ -449,11 +453,61 @@ def _resolve_scale(args, ps, is_dxf, region, header_units):
                 "  no usable dimensions were found in the drawing\n")
     raise ValueError(
         f"scale is not established for this drawing.\n{estimate}"
-        f"  the file header declares {header_units:g} units/foot\n"
+        + (f"  the file header declares {header_units:g} units/foot\n" if header_units
+           else "  the file header declares no units\n") +
         "Identify one wall you can measure:\n"
         "  --scale-from-wall X1 Y1 X2 Y2 LENGTH\n"
         "or accept the drawing's own dimensions:\n"
         "  --trust-extracted-scale")
+
+
+def _write_scale_report(ps, header_units, input_path, args, out_path):
+    """<stem>.scale.json: the evidence a scale gate shows before anything is built.
+
+    `extracted` is computed exactly as the ladder computes it, so a UI can never
+    offer a scale that --trust-extracted-scale would then reject.
+    """
+    from archiagent.scale.extracted import extracted_scale
+
+    extracted = extracted_scale(ps, args.scale_tolerance_in)
+    points = [pt for p in ps.primitives for pt in p.coords]
+    report = {
+        "schema_version": 1,
+        "source_sha256": ps.source_sha256,
+        "header": {"insunits": _header_insunits(input_path), "units_per_foot": header_units},
+        "extracted": None if extracted is None else {
+            "units_per_foot": extracted.units_per_foot,
+            "support": extracted.support,
+            "basis": extracted.basis,
+        },
+        "dimensions": len(ps.dimensions),
+        "extents": {
+            "min": [min(x for x, _ in points), min(y for _, y in points)] if points else None,
+            "max": [max(x for x, _ in points), max(y for _, y in points)] if points else None,
+        },
+    }
+    target = out_path.with_suffix(".scale.json")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(report, indent=2))
+    print(f"scale evidence -> {target}")
+
+
+def _header_insunits(path) -> int | None:
+    """$INSUNITS as written, read from the HEADER section only. The full
+    drawing is already loaded; re-parsing a multi-megabyte DXF for one code
+    would double --prepare's cost."""
+    from ezdxf.lldxf.tagger import ascii_tags_loader
+    try:
+        with open(path, encoding="utf-8", errors="replace") as stream:
+            tags = ascii_tags_loader(stream)
+            for tag in tags:
+                if tag.code == 9 and tag.value == "$INSUNITS":
+                    return int(next(tags).value)
+                if tag.code == 0 and tag.value == "ENDSEC":
+                    return None
+    except (OSError, ValueError, StopIteration):
+        return None
+    return None
 
 
 def _configuration(call, label):
@@ -725,6 +779,11 @@ def _main(argv: list[str] | None = None) -> int:
 
     authoring = not (args.inspect or args.classify_only or args.list_regions)
 
+    if args.prepare and not is_dxf:
+        print("error: --prepare reads a DXF or DWG; a PDF has no scale evidence to prepare",
+              file=sys.stderr)
+        return EXIT_USAGE
+
     if args.dwgFilePath and authoring and not args.outputDir:
         print("error: --outputDir is required unless --inspect or "
               "--classify-only is given", file=sys.stderr)
@@ -785,7 +844,7 @@ def _main(argv: list[str] | None = None) -> int:
     classifier_issues: list[Issue] = []
     classifier: LayerClassifier | None = None
     adjudicator = None
-    if not (args.inspect or args.list_regions):
+    if not (args.inspect or args.list_regions or args.prepare):
         try:
             classifier = (_dxf_classifier(args, input_path,
                                           on_issue=classifier_issues.append)
@@ -808,6 +867,10 @@ def _main(argv: list[str] | None = None) -> int:
             ps = load_pdf(input_path, page=args.page)
             stats = build_inventory(ps)
 
+        if args.prepare:
+            _write_scale_report(ps, units_per_foot, input_path, args, out_path)
+            return EXIT_OK
+
         if args.list_regions:
             from dataclasses import asdict
             region_scale, _, _ = _resolve_scale(args, ps, is_dxf, None,
@@ -823,7 +886,10 @@ def _main(argv: list[str] | None = None) -> int:
             cache = Path(input_path).parent / ".archiagent-cache" / "symbols"
             store = cache / "candidates.json"
             existing = tuple(json.loads(store.read_text())) if store.is_file() else ()
-            candidates = merge(existing, harvest(ps, units_per_foot))
+            # Sizes are in feet, so they need the run's real scale: the header's
+            # units are only a claim, and absent on some drawings.
+            harvest_scale, _, _ = _resolve_scale(args, ps, is_dxf, None, units_per_foot)
+            candidates = merge(existing, harvest(ps, harvest_scale))
             cache.mkdir(parents=True, exist_ok=True)
             store.write_text(json.dumps(candidates, indent=2))
             previews = sum(write_preview(c, cache / f"{c['id']}.png") is not None
@@ -995,8 +1061,8 @@ def _main(argv: list[str] | None = None) -> int:
         # (OSError, RuntimeError) catch below: DxfUnitsError subclasses
         # RuntimeError.
         print(f"error: {e}", file=sys.stderr)
-        print("hint: pass --units-per-foot to specify the drawing's units "
-              "(12 for inches, 1 for feet, 304.8 for mm).", file=sys.stderr)
+        print("hint: scale comes from --scale-from-wall X1 Y1 X2 Y2 LENGTH or "
+              "--trust-extracted-scale, never from a number of units.", file=sys.stderr)
         return EXIT_USAGE
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
