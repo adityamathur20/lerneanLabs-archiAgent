@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import re
 import shlex
 import subprocess
 import sys
@@ -87,6 +88,40 @@ def ezdxf_facts(dxf: Path) -> dict:
         "modelspace": sum(kinds.values()),
         "by_type": dict(sorted(kinds.items())),
     }
+
+
+#: ezdxf's placeholder for "no extents": a DXF carrying it frames to nothing.
+UNSET_EXTENT = 1e19
+
+
+def writer_defects(dxf: Path) -> dict:
+    """Defects LibreDWG's DXF writer was measured to introduce on real drawings
+    (2026-10-08). Each one is invisible to a count comparison:
+
+    - entities inside blocks written with an EMPTY layer name (door blocks);
+    - "X @ N" layers: annotation reassigned to an invented duplicate layer;
+    - layers written OFF although the DWG has them on (the viewer hides them);
+    - $EXTMIN/$EXTMAX and the model layout's extents left unset.
+    """
+    doc = ezdxf.readfile(str(dxf))
+    blank = sum(1 for blk in doc.blocks for e in blk if not e.dxf.get("layer", ""))
+    suffixed = sorted(l.dxf.name for l in doc.layers if re.search(r" @ \d+$", l.dxf.name))
+    layers = list(doc.layers)
+    extmin = doc.modelspace().dxf.get("extmin")
+    return {
+        "blank_layer_entities": blank,
+        "suffixed_layers": suffixed,
+        "layers_off": sum(l.is_off() for l in layers),
+        "layers": len(layers),
+        "extents_unset": extmin is None or abs(extmin[0]) >= UNSET_EXTENT,
+    }
+
+
+def emptied_blocks(lib: Path, oda: Path) -> list[str]:
+    """Block definitions ODA fills and LibreDWG writes empty: real data loss."""
+    a, b = ezdxf.readfile(str(lib)), ezdxf.readfile(str(oda))
+    return sorted(blk.name for blk in b.blocks
+                  if len(blk) and blk.name in a.blocks and not len(a.blocks.get(blk.name)))
 
 
 def ingest_facts(dxf: Path) -> dict:
@@ -185,6 +220,14 @@ def markdown(rows: list[dict], oda: bool, ran_pipeline: bool) -> str:
             f"| {lib['ezdxf']['modelspace']} | {ingest.get('source_entities', ingest.get('error', ''))} "
             f"| {ingest.get('native_dimensions', '')} | {outcome} "
             f"| {walls} | {versus} |")
+    lines += ["", "## LibreDWG writer defects", "",
+              "| DWG | blank-layer block entities | `@ N` layers | layers off | extents unset |",
+              "|---|---|---|---|---|"]
+    for row in rows:
+        w = row["libredwg"].get("writer_defects")
+        if w:
+            lines.append(f"| {row['dwg']} | {w['blank_layer_entities']} | {len(w['suffixed_layers'])} "
+                         f"| {w['layers_off']} / {w['layers']} | {'yes' if w['extents_unset'] else 'no'} |")
     diffs = [r for r in rows if r.get("differences")]
     if diffs:
         lines += ["", "## Differences from ODA", ""]
@@ -224,12 +267,18 @@ def main(argv: list[str] | None = None) -> int:
             result: dict = {"convert": info}
             if dxf:
                 result["ezdxf"] = ezdxf_facts(dxf)
+                if backend == "libredwg":
+                    result["writer_defects"] = writer_defects(dxf)
                 result["ingest"] = ingest_facts(dxf)
                 if not args.skip_pipeline:
                     result["pipeline"] = pipeline_facts(dxf, work / "out", extra, args.timeout)
             row[backend] = result
         if "oda" in row and row["oda"]["convert"]["ok"] and row["libredwg"]["convert"]["ok"]:
             row["differences"] = compare(row["libredwg"], row["oda"])
+            lib_dxf = args.out / dwg.stem / "libredwg" / "dxf" / f"{dwg.stem}.dxf"
+            oda_dxf = args.out / dwg.stem / "oda" / "dxf" / f"{dwg.stem}.dxf"
+            if emptied := emptied_blocks(lib_dxf, oda_dxf):
+                row["differences"].append(f"blocks written empty: {', '.join(emptied)}")
         rows.append(row)
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -238,10 +287,18 @@ def main(argv: list[str] | None = None) -> int:
     print(f"wrote {args.out / 'fidelity.md'}", file=sys.stderr)
 
     failed = [r["dwg"] for r in rows if not r["libredwg"]["convert"]["ok"]]
+    # Any ingest-level difference fails too: what archiAgent loads must match,
+    # not merely what the pipeline happens to conclude from it.
     pipeline_diffs = [r["dwg"] for r in rows
-                      if any(d.startswith(("pipeline", "regions", "ifc")) for d in r.get("differences", []))]
-    if failed or pipeline_diffs:
-        print(f"GATE FAILS: conversion failed {failed}, pipeline differs {pipeline_diffs}", file=sys.stderr)
+                      if any(d.startswith(("pipeline", "regions", "ifc", "ingest", "blocks"))
+                             for d in r.get("differences", []))]
+    defective = [r["dwg"] for r in rows
+                 if (w := r["libredwg"].get("writer_defects"))
+                 and (w["blank_layer_entities"] or w["suffixed_layers"] or w["extents_unset"]
+                      or w["layers_off"] > w["layers"] // 2)]
+    if failed or pipeline_diffs or defective:
+        print(f"GATE FAILS: conversion failed {failed}, differs from ODA {pipeline_diffs}, "
+              f"writer defects {defective}", file=sys.stderr)
         return 1
     print("GATE PASSES" + ("" if oda else " for conversion only: ODA absent, nothing compared"),
           file=sys.stderr)
