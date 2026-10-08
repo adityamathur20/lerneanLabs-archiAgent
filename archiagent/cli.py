@@ -177,6 +177,10 @@ def _parser() -> argparse.ArgumentParser:
                    help="convert a DWG, write <stem>.scale.json (the header's units, the scale the "
                         "drawing's own dimensions imply, extents) and stop: no classification, "
                         "no LLM, no IFC. What a UI needs to show a drawing and ask for its scale")
+    p.add_argument("--harvest-symbols-to", metavar="PATH",
+                   help="during a normal DXF/DWG run, also propose symbol-library candidates, sized "
+                        "with the scale the run resolved, and write them to PATH (JSON). Nothing "
+                        "is approved: a reviewer does that")
     p.add_argument("--harvest-symbols", action="store_true", help="propose library candidates from this drawing's blocks and exit; writes candidates and previews under the cache directory")
     p.add_argument("--require-accepted", action="store_true", help="write review report but refuse IFC when acceptance errors remain")
     p.add_argument("--freeze-only", action="store_true", help="save interpretation, review and overlays without authoring IFC")
@@ -959,6 +963,7 @@ def _main(argv: list[str] | None = None) -> int:
             classifier_issues.append(Issue("info", "symbols", "symbol_library_empty",
                                            "no reviewed symbol templates; run --harvest-symbols to propose some"))
         models=[];sources=[]
+        harvested, harvest_scale = (), None
         for plan_index, region in enumerate(regions, 1):
             source = select_region(ps,region) if region else ps
             selected_scale, scale_rung, scale_issues = _configuration(
@@ -966,6 +971,10 @@ def _main(argv: list[str] | None = None) -> int:
                                        units_per_foot if is_dxf else None),
                 "scale")
             classifier_issues.extend(scale_issues)
+            if args.harvest_symbols_to and is_dxf:
+                from archiagent.classify.symbol_harvest import harvest, merge
+                harvested = merge(harvested, harvest(source, selected_scale))
+                harvest_scale = selected_scale
             if scale_rung == "asserted" and len(_wall_length_measurements(args)) == 1 \
                     and not any(i.code == "asserted_scale_overrides_extracted" for i in scale_issues):
                 print("note: scale set from one asserted length and nothing in the drawing "
@@ -993,6 +1002,15 @@ def _main(argv: list[str] | None = None) -> int:
             if region is None:
                 model = _whole_drawing_storey(model, args.storey_name, args.elevation)
             models.append(model);sources.append(source)
+        if args.harvest_symbols_to and is_dxf:
+            # Written before review and authoring: the candidates are valid
+            # whether or not this model later passes validation.
+            target = Path(args.harvest_symbols_to)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps({"schema_version": 1, "source_sha256": ps.source_sha256,
+                                          "units_per_foot": harvest_scale,
+                                          "candidates": list(harvested)}, indent=2))
+            print(f"symbols {len(harvested)} candidates -> {target}")
         reference_evaluation = None
         if args.reference_file:
             reference = load_reference(args.reference_file, sources[0], regions[0])
