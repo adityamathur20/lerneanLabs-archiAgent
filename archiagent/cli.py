@@ -449,7 +449,8 @@ def _resolve_scale(args, ps, is_dxf, region, header_units):
                 "  no usable dimensions were found in the drawing\n")
     raise ValueError(
         f"scale is not established for this drawing.\n{estimate}"
-        f"  the file header declares {header_units:g} units/foot\n"
+        + (f"  the file header declares {header_units:g} units/foot\n" if header_units
+           else "  the file header declares no units\n") +
         "Identify one wall you can measure:\n"
         "  --scale-from-wall X1 Y1 X2 Y2 LENGTH\n"
         "or accept the drawing's own dimensions:\n"
@@ -823,7 +824,10 @@ def _main(argv: list[str] | None = None) -> int:
             cache = Path(input_path).parent / ".archiagent-cache" / "symbols"
             store = cache / "candidates.json"
             existing = tuple(json.loads(store.read_text())) if store.is_file() else ()
-            candidates = merge(existing, harvest(ps, units_per_foot))
+            # Sizes are in feet, so they need the run's real scale: the header's
+            # units are only a claim, and absent on some drawings.
+            harvest_scale, _, _ = _resolve_scale(args, ps, is_dxf, None, units_per_foot)
+            candidates = merge(existing, harvest(ps, harvest_scale))
             cache.mkdir(parents=True, exist_ok=True)
             store.write_text(json.dumps(candidates, indent=2))
             previews = sum(write_preview(c, cache / f"{c['id']}.png") is not None
@@ -995,8 +999,8 @@ def _main(argv: list[str] | None = None) -> int:
         # (OSError, RuntimeError) catch below: DxfUnitsError subclasses
         # RuntimeError.
         print(f"error: {e}", file=sys.stderr)
-        print("hint: pass --units-per-foot to specify the drawing's units "
-              "(12 for inches, 1 for feet, 304.8 for mm).", file=sys.stderr)
+        print("hint: scale comes from --scale-from-wall X1 Y1 X2 Y2 LENGTH or "
+              "--trust-extracted-scale, never from a number of units.", file=sys.stderr)
         return EXIT_USAGE
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
