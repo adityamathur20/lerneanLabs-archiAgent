@@ -26,6 +26,8 @@
 
 ## Part A — Scale from a wall
 
+> **Built 2026-10-08, not yet deployed.** archiAgent `feat/scale-prepare` (A1, A2, help-text fix); archiViewer `feat/scale-gate` (A3–A5, plus a killed-work-horse fix found end to end). Verified in Chrome through the local API, worker and ODA on a corpus DWG. Deploy order: merge archiAgent first.
+
 ### Task A1: a DXF with no units header must still run (archiAgent)
 
 `load_dxf` raises `DxfUnitsError` when `$INSUNITS` is absent or unitless, *before* `_resolve_scale` can use an asserted wall. A drawing whose header says nothing is exactly the one that needs an asserted wall.
