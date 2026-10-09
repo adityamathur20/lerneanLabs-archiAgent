@@ -160,6 +160,16 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--scale-tolerance-in", type=float, default=2.0, metavar="IN",
                    help="how far two spans may disagree and still be agreeing on a scale "
                         "(default 2.0)")
+    p.add_argument("--wall-thickness", nargs="+", type=float, default=None, metavar="IN",
+                   help="the wall thicknesses of this drawing, in inches, e.g. --wall-thickness "
+                        "4.5 9. Replaces the set inferred from the drawing when judging wall "
+                        "candidates.")
+    p.add_argument("--wall-thickness-exhaustive", action="store_true",
+                   help="the --wall-thickness set is complete: a candidate wall matching none "
+                        "of it is rejected")
+    p.add_argument("--wall-thickness-tolerance-in", type=float, default=0.5, metavar="IN",
+                   help="how far a wall may differ from a declared thickness and still match "
+                        "(default 0.5)")
     p.add_argument("--rules", action="store_true", help="offline layer hints; no provider call")
     p.add_argument("--region", nargs=4, type=float, metavar=("XMIN","YMIN","XMAX","YMAX"), help="one source-coordinate plan window")
     p.add_argument("--regions-file", help="reviewed JSON regions: kind='plan', explicit elevations, optional units_per_foot per region")
@@ -352,6 +362,15 @@ def _unmatched_wall_names(names: list[str], stats) -> list[str]:
     return [n for n in names if n not in known]
 
 
+def _declared_thickness_ft(args) -> tuple[float, ...]:
+    """--wall-thickness as feet: sorted, deduplicated, converted here and nowhere else."""
+    values = args.wall_thickness or ()
+    for v in values:
+        if not math.isfinite(v) or not 0 < v <= 48:
+            raise ValueError(f"--wall-thickness {v:g} must be above 0 and at most 48 inches")
+    return tuple(v / 12 for v in sorted(set(values)))
+
+
 def _validate_options(args) -> None:
     for name in ("height", "scale_tolerance_in", "timeout"):
         value = getattr(args, name)
@@ -359,6 +378,13 @@ def _validate_options(args) -> None:
             raise ValueError(f"--{name.replace('_', '-')} must be finite and positive")
     if args.elevation is not None and not math.isfinite(args.elevation):
         raise ValueError("--elevation must be finite")
+    _declared_thickness_ft(args)
+    if args.wall_thickness_exhaustive and not args.wall_thickness:
+        raise ValueError("--wall-thickness-exhaustive needs --wall-thickness: "
+                         "it says the declared set is complete")
+    tolerance = args.wall_thickness_tolerance_in
+    if not math.isfinite(tolerance) or not 0 < tolerance <= 6:
+        raise ValueError("--wall-thickness-tolerance-in must be above 0 and at most 6 inches")
     if args.page < 0 or args.maxEscalation < 0:
         raise ValueError("--page and --maxEscalation must be nonnegative")
     if args.max_tokens is not None and args.max_tokens <= 0:
@@ -753,6 +779,8 @@ def _main(argv: list[str] | None = None) -> int:
     if args.replay_manifest:
         incompatible = {"--height", "--walls", "--rules", "--provider", "--model",
                         "--scale-from-wall", "--trust-extracted-scale",
+                        "--wall-thickness", "--wall-thickness-exhaustive",
+                        "--wall-thickness-tolerance-in",
                         "--region", "--regions-file", "--storey-name", "--elevation", "--measurements",
                         "--review-file", "--reference-file", "--ocr", "--workbench", "--page"}
         specified = {arg.split("=", 1)[0] for arg in argv}
@@ -987,7 +1015,11 @@ def _main(argv: list[str] | None = None) -> int:
             kwargs = dict(wall_height_ft=args.height,region=region,measurements=measurements,review=review)
             if is_dxf:
                 model = extract_from_dxf(source,selected_classifier,units_per_foot=selected_scale,
-                                         adjudicator=adjudicator,symbol_library=symbol_library,**kwargs)
+                                         adjudicator=adjudicator,symbol_library=symbol_library,
+                                         declared_thickness_ft=_declared_thickness_ft(args),
+                                         thickness_tolerance_ft=(args.wall_thickness_tolerance_in / 12
+                                                                 if args.wall_thickness else None),
+                                         thickness_exhaustive=args.wall_thickness_exhaustive,**kwargs)
             else:
                 model = extract_from_primitives(source,selected_classifier,units_per_foot=selected_scale,stats=region_stats,**kwargs)
             if region is None:
