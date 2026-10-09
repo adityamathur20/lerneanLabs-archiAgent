@@ -255,7 +255,15 @@ def score_candidates(walls, ctx: Context) -> tuple[ScoredCandidate, ...]:
             ("connectivity", connectivity[i]), ("closure", closure[i]),
             ("thickness", _thickness(w, modes, ctx.thickness_tolerance_ft)))
         score = combine(signals)
-        out.append(ScoredCandidate(candidate_id(w), w, signals, score, band(score)))
+        # A declared set the user calls complete is ground truth, so a run
+        # matching none of it is not a wall. This overrides the band rather
+        # than raising the thickness weight: combine() normalises by the sum of
+        # WEIGHTS, so reweighting would re-band every candidate in every
+        # drawing against floors that were tuned to the current normalisation.
+        vetoed = (ctx.thickness_exhaustive and ctx.declared_thickness_ft
+                  and _thickness(w, modes, ctx.thickness_tolerance_ft) < 0)
+        out.append(ScoredCandidate(candidate_id(w), w, signals, score,
+                                   "reject" if vetoed else band(score)))
     return tuple(out)
 
 
