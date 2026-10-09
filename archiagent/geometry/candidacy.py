@@ -31,6 +31,8 @@ NEGATIVE_ROLES: frozenset[Role] = frozenset({
     Role.FURNITURE, Role.STAIR, Role.ANNOTATION, Role.PLUMBING, Role.ELECTRICAL,
     Role.VEHICLE, Role.LANDSCAPE, Role.RAILING, Role.DOOR, Role.WINDOW})
 _GLYPH_TYPES = frozenset({"CIRCLE", "HATCH"})
+MODE_SHARE = 0.10
+MODE_TOLERANCE_FT = 1 / 12
 
 
 @dataclass(frozen=True)
@@ -43,10 +45,18 @@ class Context:
     insert_counts: Counter     # block name -> INSERT entity count
     glyph_tree: STRtree | None
     glyph_points: tuple[Point, ...]
+    # Declared by the user, in feet. Empty means candidacy infers the set from
+    # the drawing, as it always has.
+    declared_thickness_ft: tuple[float, ...] = ()
+    thickness_tolerance_ft: float = MODE_TOLERANCE_FT
+    thickness_exhaustive: bool = False
 
 
 def build_context(ps: PrimitiveSet, classification: Classification,
-                  units_per_foot: float) -> Context:
+                  units_per_foot: float, *,
+                  declared_thickness_ft: tuple[float, ...] = (),
+                  thickness_tolerance_ft: float = MODE_TOLERANCE_FT,
+                  thickness_exhaustive: bool = False) -> Context:
     roles = {d.layer.casefold(): (d.role, d.confidence) for d in classification}
     outlines: dict[str, list[Polygon]] = {}
     glyphs: list[Point] = []
@@ -68,7 +78,8 @@ def build_context(ps: PrimitiveSet, classification: Classification,
     return Context(roles, {k: tuple(v) for k, v in outlines.items()},
                    {child: tuple(children[parent]) for child, parent in parents.items()},
                    parents, block_of, Counter(block_of.values()),
-                   STRtree(glyphs) if glyphs else None, tuple(glyphs))
+                   STRtree(glyphs) if glyphs else None, tuple(glyphs),
+                   declared_thickness_ft, thickness_tolerance_ft, thickness_exhaustive)
 
 
 def _layer_role(wall: WallSeg, ctx: Context) -> float:
@@ -132,8 +143,6 @@ ACCEPT_FLOOR = 0.65      # starting values; tuned only against wall-coverage met
 REJECT_CEILING = 0.35
 LOOP_MIN_FT = 10.0       # a closed loop smaller than this is furniture/fixture scale
 JOIN_SLACK_FT = 1 / 12
-MODE_SHARE = 0.10
-MODE_TOLERANCE_FT = 1 / 12
 # Connectivity, closure and nested outlines separate the two reported defects;
 # layer role is mid-weight so geometry can outvote it.
 WEIGHTS = {"layer_role": 1.0, "length": 1.0, "connectivity": 2.0, "closure": 2.0,
@@ -214,7 +223,12 @@ def _closure(walls, touches) -> list[float]:
 
 
 def _thickness_modes(walls, ctx: Context) -> tuple[float, ...]:
-    """Thicknesses carrying at least MODE_SHARE of confident wall-layer run length."""
+    """Declared thicknesses when the user supplied them, else the inferred set.
+
+    Thicknesses carrying at least MODE_SHARE of confident wall-layer run length.
+    """
+    if ctx.declared_thickness_ft:
+        return ctx.declared_thickness_ft
     lengths: Counter = Counter()
     for w in walls:
         role, confidence = ctx.roles.get(w.source_layer.casefold(), (Role.IGNORE, 0.0))
@@ -224,10 +238,10 @@ def _thickness_modes(walls, ctx: Context) -> tuple[float, ...]:
     return tuple(t for t, length in sorted(lengths.items()) if total and length / total >= MODE_SHARE)
 
 
-def _thickness(wall: WallSeg, modes: tuple[float, ...]) -> float:
+def _thickness(wall: WallSeg, modes: tuple[float, ...], tolerance_ft: float) -> float:
     if not modes:
         return 0.0
-    return 1.0 if any(abs(wall.thickness_ft - m) <= MODE_TOLERANCE_FT for m in modes) else -0.5
+    return 1.0 if any(abs(wall.thickness_ft - m) <= tolerance_ft for m in modes) else -0.5
 
 
 def score_candidates(walls, ctx: Context) -> tuple[ScoredCandidate, ...]:
@@ -239,7 +253,7 @@ def score_candidates(walls, ctx: Context) -> tuple[ScoredCandidate, ...]:
     for i, w in enumerate(walls):
         signals = candidate_signals(w, ctx) + (
             ("connectivity", connectivity[i]), ("closure", closure[i]),
-            ("thickness", _thickness(w, modes)))
+            ("thickness", _thickness(w, modes, ctx.thickness_tolerance_ft)))
         score = combine(signals)
         out.append(ScoredCandidate(candidate_id(w), w, signals, score, band(score)))
     return tuple(out)
