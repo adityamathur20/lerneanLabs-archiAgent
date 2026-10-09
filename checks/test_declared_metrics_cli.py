@@ -123,3 +123,11 @@ def test_the_exhaustive_flag_alone_is_a_usage_error(tmp_path):
     done = run("--dxfFilePath", "plan.dxf", "--outputDir", str(tmp_path), "--wall-thickness-exhaustive")
     assert done.returncode == 3
     assert "--wall-thickness" in done.stderr
+
+
+def test_a_pdf_run_refuses_thickness_flags_rather_than_ignoring_them(tmp_path):
+    # extract_from_primitives never reads a declared set; a silent no-op would
+    # let the user believe their thicknesses were used.
+    done = run("--pdfFilePath", "plan.pdf", "--outputDir", str(tmp_path), "--wall-thickness", "9")
+    assert done.returncode == 3
+    assert "PDF" in done.stderr and "--wall-thickness" in done.stderr

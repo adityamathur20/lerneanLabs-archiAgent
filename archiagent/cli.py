@@ -379,6 +379,8 @@ def _validate_options(args) -> None:
     if args.elevation is not None and not math.isfinite(args.elevation):
         raise ValueError("--elevation must be finite")
     _declared_thickness_ft(args)
+    if args.wall_thickness and args.pdfFilePath:
+        raise ValueError("--wall-thickness is not supported for PDF input: use a DXF or DWG")
     if args.wall_thickness_exhaustive and not args.wall_thickness:
         raise ValueError("--wall-thickness-exhaustive needs --wall-thickness: "
                          "it says the declared set is complete")
