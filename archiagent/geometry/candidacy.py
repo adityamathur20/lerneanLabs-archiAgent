@@ -238,6 +238,35 @@ def _thickness_modes(walls, ctx: Context) -> tuple[float, ...]:
     return tuple(t for t, length in sorted(lengths.items()) if total and length / total >= MODE_SHARE)
 
 
+# A declared set makes observed thickness a free check on scale: if every
+# thickness is off by one factor, the scale is wrong, not the drawing.
+SCALE_CHECK_FACTORS = (1 / 304.8, 1 / 30.48, 1 / 12, 12.0, 30.48, 304.8)
+SCALE_CHECK_SHARE = 0.60
+
+
+def thickness_scale_check(walls, declared_ft, tolerance_ft):
+    """The uniform factor that would align observed thicknesses to the declared set.
+
+    Returns None when the observed thicknesses already fit, or when no single
+    factor explains most of the run length. Never changes the scale: a silent
+    automatic rescale is the kind of invisible decision this pipeline avoids.
+    """
+    walls = tuple(walls)
+    if not declared_ft or not walls:
+        return None
+
+    def share(factor):
+        matched = sum(w.length_ft for w in walls
+                      if any(abs(w.thickness_ft / factor - d) <= tolerance_ft for d in declared_ft))
+        total = sum(w.length_ft for w in walls)
+        return matched / total if total else 0.0
+
+    if share(1.0) >= SCALE_CHECK_SHARE:
+        return None
+    best = max(SCALE_CHECK_FACTORS, key=share)
+    return best if share(best) >= SCALE_CHECK_SHARE else None
+
+
 def _thickness(wall: WallSeg, modes: tuple[float, ...], tolerance_ft: float) -> float:
     if not modes:
         return 0.0

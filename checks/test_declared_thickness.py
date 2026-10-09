@@ -96,6 +96,8 @@ def test_the_scoring_weights_and_normalisation_are_unchanged():
     assert (ACCEPT_FLOOR, REJECT_CEILING) == (0.65, 0.35)
 
 
+import pytest
+
 from archiagent.geometry.candidacy import select_walls
 
 
@@ -123,3 +125,57 @@ def test_select_walls_passes_the_declared_set_through():
     assert kept == ()
     assert {d.verdict for d in decisions} == {"reject"}
     assert all(d.verdict_source == "deterministic" for d in decisions)
+
+
+from archiagent.geometry.candidacy import thickness_scale_check
+
+
+def test_a_uniform_factor_is_reported_when_nothing_matches():
+    # Authored in inches but read as feet: every thickness is 12x too large.
+    walls = [wall((0, 0), (10, 0), 4.0), wall((0, 5), (10, 5), 8.0)]
+    factor = thickness_scale_check(walls, (4 / 12, 8 / 12), 0.5 / 12)
+    assert factor == pytest.approx(12.0, rel=0.02)
+
+
+def test_no_factor_is_reported_when_thicknesses_already_fit():
+    walls = [wall((0, 0), (10, 0), 4 / 12), wall((0, 5), (10, 5), 8 / 12)]
+    assert thickness_scale_check(walls, (4 / 12, 8 / 12), 0.5 / 12) is None
+
+
+def test_no_factor_is_reported_without_a_declared_set():
+    assert thickness_scale_check([wall((0, 0), (10, 0), 4.0)], (), 0.5 / 12) is None
+
+
+from types import SimpleNamespace
+
+from archiagent.pipeline import extract_from_dxf
+from checks.candidacy_fixtures import house_faces
+
+
+def run_house(**kwargs):
+    ps = source(house_faces())
+    return extract_from_dxf(ps, SimpleNamespace(classify=lambda stats: CLASSIFICATION),
+                            units_per_foot=1.0, **kwargs)
+
+
+def issue_codes(model):
+    return {i.code for i in model.issues}
+
+
+def test_the_pipeline_warns_when_a_declared_set_fits_only_after_a_rescale():
+    # The 9in house read as if it were 12x thinner: a declared 0.75in set fits
+    # only after dividing the observed thickness by 12.
+    model = run_house(declared_thickness_ft=(0.75 / 12,), thickness_tolerance_ft=0.5 / 12)
+    warning = next(i for i in model.issues if i.code == "declared_thickness_scale_mismatch")
+    assert warning.severity == "warn"
+    assert "12" in warning.msg
+    assert "units_per_foot" not in warning.msg     # the flag no longer exists
+
+
+def test_the_pipeline_is_silent_when_the_declared_set_fits():
+    model = run_house(declared_thickness_ft=(0.75,), thickness_tolerance_ft=0.5 / 12)
+    assert "declared_thickness_scale_mismatch" not in issue_codes(model)
+
+
+def test_the_pipeline_is_silent_without_a_declared_set():
+    assert "declared_thickness_scale_mismatch" not in issue_codes(run_house())
