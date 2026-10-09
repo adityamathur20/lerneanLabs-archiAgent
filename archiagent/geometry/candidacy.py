@@ -337,7 +337,10 @@ def _decide(c: ScoredCandidate, verdict, on_wall_layer: bool) -> CandidateDecisi
 
 
 def select_walls(ps: PrimitiveSet, proposed, classification: Classification, units_per_foot: float,
-                 *, adjudicator: Adjudicator | None = None
+                 *, adjudicator: Adjudicator | None = None,
+                 declared_thickness_ft: tuple[float, ...] = (),
+                 thickness_tolerance_ft: float = MODE_TOLERANCE_FT,
+                 thickness_exhaustive: bool = False
                  ) -> tuple[tuple[WallSeg, ...], tuple[CandidateDecision, ...], tuple[Issue, ...]]:
     """Accepted walls (in proposed order), a decision for every run, and issues."""
     proposed = tuple(proposed)
@@ -347,7 +350,11 @@ def select_walls(ps: PrimitiveSet, proposed, classification: Classification, uni
     # Stair treads now get paired on stair layers; the ladder rule is applied to
     # newly admitted layers only, so wall-layer behaviour is unchanged.
     kept, ladders = reject_ladder_runs(admitted) if admitted else ((), ())
-    scored = score_candidates(established + tuple(kept), build_context(ps, classification, units_per_foot))
+    scored = score_candidates(established + tuple(kept),
+                              build_context(ps, classification, units_per_foot,
+                                            declared_thickness_ft=declared_thickness_ft,
+                                            thickness_tolerance_ft=thickness_tolerance_ft,
+                                            thickness_exhaustive=thickness_exhaustive))
     verdicts, issues = {}, []
     ambiguous = tuple(c for c in scored if c.band == "ambiguous")
     if ambiguous and adjudicator is not None:

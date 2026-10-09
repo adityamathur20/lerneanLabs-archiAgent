@@ -96,15 +96,11 @@ def test_the_scoring_weights_and_normalisation_are_unchanged():
     assert (ACCEPT_FLOOR, REJECT_CEILING) == (0.65, 0.35)
 
 
-import pytest
-
 from archiagent.geometry.candidacy import select_walls
 
 
 # Adjudicator is a plain Callable[[PrimitiveSet, tuple[ScoredCandidate, ...], float], ...]
 # returning (verdicts, issues) -- not an object with a method.
-@pytest.mark.xfail(raises=TypeError, strict=True,
-                   reason="select_walls gains the declared-set keywords in Task 3")
 def test_a_vetoed_candidate_is_never_sent_to_the_adjudicator():
     seen = []
 
@@ -116,3 +112,14 @@ def test_a_vetoed_candidate_is_never_sent_to_the_adjudicator():
                  declared_thickness_ft=(4 / 12,), thickness_tolerance_ft=0.5 / 12,
                  thickness_exhaustive=True)
     assert seen == []
+
+
+def test_select_walls_passes_the_declared_set_through():
+    # CandidateDecision carries `verdict` ("accept" | "reject"), not `band`.
+    kept, decisions, _ = select_walls(
+        source(), house(), CLASSIFICATION, 1.0,
+        declared_thickness_ft=(4 / 12,), thickness_tolerance_ft=0.5 / 12,
+        thickness_exhaustive=True)
+    assert kept == ()
+    assert {d.verdict for d in decisions} == {"reject"}
+    assert all(d.verdict_source == "deterministic" for d in decisions)
