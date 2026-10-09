@@ -20,7 +20,7 @@
 - **A scale is never guessed.** The two ways forward are the drawing's own dimensions or one asserted wall; the header alone is never used (scale-resolution design).
 - **The service never imports archiagent**; it runs the CLI as a subprocess.
 - **Release order:** push archiAgent `main` before archiViewer `main` — the worker image is built from archiAgent `main`.
-- **Symbol templates are shared across tenants.** They are normalised glyphs (centred, unit size) with hash-only provenance, never file names or raw block names. **Open question for the owner:** harvest from every tenant's uploads into one shared library (assumed by this plan), or keep a library per tenant.
+- **Symbol templates are shared across tenants.** They are normalised glyphs (centred, unit size) with hash-only provenance, never file names or raw block names. **Decided by the owner 2026-10-09: one library, shared across all customers.** Candidates are harvested from every tenant's uploads, and an approval applies to everyone.
 
 ---
 
@@ -127,4 +127,4 @@ A1 → A2 → A3 → A4 → A5, then B1 → B2 → B4 → B3. A first: it unbloc
 | A user picks a non-wall line, or an arc segment | Only straight segments are selectable; the implied scale is shown against the drawing's own dimensions before converting |
 | Clicking during mlightcad's progress overlay is lost | Tools stay disabled until it hides (already in Stage A) |
 | A bad approval spreads to every tenant's runs | Approval validates like the loader; each job records the library digest it used; a template can be rejected again |
-| Candidates from customer drawings shared across tenants | Normalised glyphs, hash-only provenance; sharing itself is an open owner decision |
+| Candidates from customer drawings shared across tenants | Normalised glyphs, hash-only provenance; sharing is the owner's decision (2026-10-09) |

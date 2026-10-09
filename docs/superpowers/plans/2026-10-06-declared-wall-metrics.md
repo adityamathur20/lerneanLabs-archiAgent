@@ -1,5 +1,7 @@
 # Declared Wall Metrics Implementation Plan
 
+> **Superseded 2026-10-09 by `2026-10-09-declared-wall-thickness.md`**, which reuses this plan's Tasks 1, 2, 3 and 5 verbatim, drops Task 4 (delivered by the scale work) and rewrites Task 6. Do not execute Tasks 4, 6 or 7 from here.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let the user declare the wall thickness set and a true wall length on the CLI, so wall candidacy stops guessing the thickness set and DXF scale stops depending on a possibly-wrong file header.
