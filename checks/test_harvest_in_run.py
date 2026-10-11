@@ -57,3 +57,45 @@ def test_without_the_flag_nothing_is_harvested(tmp_path):
     run("--dxfFilePath", str(fixtures_drawing(tmp_path / "plan.dxf")), "--outputDir", str(out),
         "--rules", "--walls", "WALLS", "--scale-from-wall", "0", "0", "480", "0", "40ft")
     assert not list(out.glob("*.symbols.json"))
+
+
+# --- --harvest-min-instances ---------------------------------------------------
+
+def unnamed_blocks(path: Path, count: int) -> Path:
+    """`count` copies of one block whose name says nothing, in a drawn-in-inches room."""
+    doc = ezdxf.new("R2018")
+    doc.header["$INSUNITS"] = 1
+    doc.layers.add("WALLS")
+    block = doc.blocks.new("Z9")
+    block.add_lwpolyline([(0, 0), (20, 0), (20, 30), (0, 30)], close=True)
+    block.add_circle((10, 15), 6)
+    msp = doc.modelspace()
+    for i in range(count):
+        msp.add_blockref("Z9", (24 + i * 40, 24))
+    for a, b in (((0, 0), (480, 0)), ((480, 0), (480, 240)), ((480, 240), (0, 240)), ((0, 240), (0, 0))):
+        msp.add_line(a, b, dxfattribs={"layer": "WALLS"})
+    doc.saveas(path)
+    return path
+
+
+def harvest_only(tmp_path, *extra):
+    return run("--dxfFilePath", str(unnamed_blocks(tmp_path / "plan.dxf", 5)), "--outputDir", str(tmp_path / "out"),
+               "--harvest-symbols", "--scale-from-wall", "0", "0", "480", "0", "40ft", *extra)
+
+
+def test_five_unnamed_instances_are_not_proposed_at_the_default_limit(tmp_path):
+    done = harvest_only(tmp_path)
+    assert done.returncode == 0, done.stderr[-1500:]
+    assert "0 candidates" in done.stdout
+
+
+def test_a_lower_limit_proposes_them(tmp_path):
+    done = harvest_only(tmp_path, "--harvest-min-instances", "4")
+    assert done.returncode == 0, done.stderr[-1500:]
+    assert "1 candidates" in done.stdout
+
+
+def test_the_limit_must_be_a_positive_whole_number(tmp_path):
+    done = harvest_only(tmp_path, "--harvest-min-instances", "0")
+    assert done.returncode == 3
+    assert "--harvest-min-instances" in done.stderr

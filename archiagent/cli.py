@@ -181,6 +181,10 @@ def _parser() -> argparse.ArgumentParser:
                    help="during a normal DXF/DWG run, also propose symbol-library candidates, sized "
                         "with the scale the run resolved, and write them to PATH (JSON). Nothing "
                         "is approved: a reviewer does that")
+    p.add_argument("--harvest-min-instances", type=int, default=None, metavar="N",
+                   help="a block shape is proposed as a symbol candidate once it appears this many "
+                        "times (default 8); a block whose name says furniture, plumbing, vehicle or "
+                        "electrical is proposed regardless")
     p.add_argument("--harvest-symbols", action="store_true", help="propose library candidates from this drawing's blocks and exit; writes candidates and previews under the cache directory")
     p.add_argument("--require-accepted", action="store_true", help="write review report but refuse IFC when acceptance errors remain")
     p.add_argument("--freeze-only", action="store_true", help="save interpretation, review and overlays without authoring IFC")
@@ -356,6 +360,11 @@ def _unmatched_wall_names(names: list[str], stats) -> list[str]:
     return [n for n in names if n not in known]
 
 
+def _harvest_limit(args) -> dict:
+    """Only what the user set: harvest() owns the default."""
+    return {} if args.harvest_min_instances is None else {"min_instances": args.harvest_min_instances}
+
+
 def _validate_options(args) -> None:
     for name in ("height", "scale_tolerance_in", "timeout"):
         value = getattr(args, name)
@@ -363,6 +372,8 @@ def _validate_options(args) -> None:
             raise ValueError(f"--{name.replace('_', '-')} must be finite and positive")
     if args.elevation is not None and not math.isfinite(args.elevation):
         raise ValueError("--elevation must be finite")
+    if args.harvest_min_instances is not None and args.harvest_min_instances < 1:
+        raise ValueError("--harvest-min-instances must be a whole number of at least 1")
     if args.page < 0 or args.maxEscalation < 0:
         raise ValueError("--page and --maxEscalation must be nonnegative")
     if args.max_tokens is not None and args.max_tokens <= 0:
@@ -893,7 +904,7 @@ def _main(argv: list[str] | None = None) -> int:
             # Sizes are in feet, so they need the run's real scale: the header's
             # units are only a claim, and absent on some drawings.
             harvest_scale, _, _ = _resolve_scale(args, ps, is_dxf, None, units_per_foot)
-            candidates = merge(existing, harvest(ps, harvest_scale))
+            candidates = merge(existing, harvest(ps, harvest_scale, **_harvest_limit(args)))
             cache.mkdir(parents=True, exist_ok=True)
             store.write_text(json.dumps(candidates, indent=2))
             previews = sum(write_preview(c, cache / f"{c['id']}.png") is not None
@@ -973,7 +984,7 @@ def _main(argv: list[str] | None = None) -> int:
             classifier_issues.extend(scale_issues)
             if args.harvest_symbols_to and is_dxf:
                 from archiagent.classify.symbol_harvest import harvest, merge
-                harvested = merge(harvested, harvest(source, selected_scale))
+                harvested = merge(harvested, harvest(source, selected_scale, **_harvest_limit(args)))
                 harvest_scale = selected_scale
             if scale_rung == "asserted" and len(_wall_length_measurements(args)) == 1 \
                     and not any(i.code == "asserted_scale_overrides_extracted" for i in scale_issues):
