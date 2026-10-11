@@ -113,6 +113,27 @@ def harvest(ps, units_per_foot, *, min_instances: int = MIN_INSTANCES) -> tuple[
     return tuple(candidates)
 
 
+def _digest(identifier: str) -> str:
+    """The shape digest of an id: `unreviewed-18bd23f2`, `door-18bd23f2` -> `18bd23f2`."""
+    return str(identifier).rsplit("-", 1)[-1]
+
+
+def hide_approved(candidates, library) -> tuple[tuple[dict, ...], int]:
+    """Drop candidates whose shape the library already holds.
+
+    A candidate's id ends in a digest of its shape; approving it renames the kind
+    prefix but keeps the digest (and records the old id), so the digest is the
+    identity. Returns what is still worth a reviewer's time, and how many hid.
+    """
+    held = set()
+    for template in library or ():
+        held.add(_digest(template.get("id", "")))
+        if template.get("approved_from"):
+            held.add(_digest(template["approved_from"]))
+    shown = tuple(c for c in candidates if _digest(c["id"]) not in held)
+    return shown, len(candidates) - len(shown)
+
+
 def merge(existing: tuple[dict, ...], found: tuple[dict, ...]) -> tuple[dict, ...]:
     """Union candidates across drawings, summing provenance for one shape."""
     by_id = {c["id"]: dict(c) for c in existing}

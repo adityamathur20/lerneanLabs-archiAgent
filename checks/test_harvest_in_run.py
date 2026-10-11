@@ -57,3 +57,91 @@ def test_without_the_flag_nothing_is_harvested(tmp_path):
     run("--dxfFilePath", str(fixtures_drawing(tmp_path / "plan.dxf")), "--outputDir", str(out),
         "--rules", "--walls", "WALLS", "--scale-from-wall", "0", "0", "480", "0", "40ft")
     assert not list(out.glob("*.symbols.json"))
+
+
+# --- --harvest-min-instances ---------------------------------------------------
+
+def unnamed_blocks(path: Path, count: int) -> Path:
+    """`count` copies of one block whose name says nothing, in a drawn-in-inches room."""
+    doc = ezdxf.new("R2018")
+    doc.header["$INSUNITS"] = 1
+    doc.layers.add("WALLS")
+    block = doc.blocks.new("Z9")
+    block.add_lwpolyline([(0, 0), (20, 0), (20, 30), (0, 30)], close=True)
+    block.add_circle((10, 15), 6)
+    msp = doc.modelspace()
+    for i in range(count):
+        msp.add_blockref("Z9", (24 + i * 40, 24))
+    for a, b in (((0, 0), (480, 0)), ((480, 0), (480, 240)), ((480, 240), (0, 240)), ((0, 240), (0, 0))):
+        msp.add_line(a, b, dxfattribs={"layer": "WALLS"})
+    doc.saveas(path)
+    return path
+
+
+def harvest_only(tmp_path, *extra):
+    return run("--dxfFilePath", str(unnamed_blocks(tmp_path / "plan.dxf", 5)), "--outputDir", str(tmp_path / "out"),
+               "--harvest-symbols", "--scale-from-wall", "0", "0", "480", "0", "40ft", *extra)
+
+
+def test_five_unnamed_instances_are_not_proposed_at_the_default_limit(tmp_path):
+    done = harvest_only(tmp_path)
+    assert done.returncode == 0, done.stderr[-1500:]
+    assert "0 candidates" in done.stdout
+
+
+def test_a_lower_limit_proposes_them(tmp_path):
+    done = harvest_only(tmp_path, "--harvest-min-instances", "4")
+    assert done.returncode == 0, done.stderr[-1500:]
+    assert "1 candidates" in done.stdout
+
+
+def test_the_limit_must_be_a_positive_whole_number(tmp_path):
+    done = harvest_only(tmp_path, "--harvest-min-instances", "0")
+    assert done.returncode == 3
+    assert "--harvest-min-instances" in done.stderr
+
+
+# --- already-approved shapes are not proposed again ---------------------------
+
+def test_hide_approved_matches_on_the_shape_digest_not_the_kind_prefix():
+    from archiagent.classify.symbol_harvest import hide_approved
+    found = [{"id": "unreviewed-18bd23f2"}, {"id": "unreviewed-aaaaaaaa"}, {"id": "furniture-bbbbbbbb"}]
+    library = [{"id": "vegetation-18bd23f2", "approved_from": "unreviewed-18bd23f2"},
+               {"id": "furniture-bbbbbbbb"}]
+    shown, hidden = hide_approved(found, library)
+    assert [c["id"] for c in shown] == ["unreviewed-aaaaaaaa"]
+    assert hidden == 2
+
+
+def test_a_library_is_not_needed_to_harvest():
+    from archiagent.classify.symbol_harvest import hide_approved
+    found = [{"id": "unreviewed-18bd23f2"}]
+    shown, hidden = hide_approved(found, ())
+    assert list(shown) == found and hidden == 0
+
+
+def approved_library_for(path: Path, drawing: Path) -> Path:
+    """Harvest the drawing, approve what it finds, write that as a library."""
+    out = path / "first"
+    done = run("--dxfFilePath", str(drawing), "--outputDir", str(out), "--harvest-symbols",
+               "--harvest-min-instances", "4", "--scale-from-wall", "0", "0", "480", "0", "40ft")
+    assert done.returncode == 0, done.stderr[-1500:]
+    found = json.loads((drawing.parent / ".archiagent-cache" / "symbols" / "candidates.json").read_text())
+    template = {**found[0], "kind": "furniture", "status": "reviewed", "reviewed_by": "test"}
+    library = path / "library.json"
+    library.write_text(json.dumps({"schema_version": 1, "templates": [template]}))
+    return library
+
+
+def test_a_harvest_run_hides_what_the_library_already_holds(tmp_path):
+    drawing = unnamed_blocks(tmp_path / "plan.dxf", 5)
+    library = approved_library_for(tmp_path, drawing)
+    again = tmp_path / "again"
+    again.mkdir()
+    second = unnamed_blocks(again / "plan.dxf", 5)
+    done = run("--dxfFilePath", str(second), "--outputDir", str(again / "out"), "--harvest-symbols",
+               "--harvest-min-instances", "4", "--symbol-library", str(library),
+               "--scale-from-wall", "0", "0", "480", "0", "40ft")
+    assert done.returncode == 0, done.stderr[-1500:]
+    assert "0 candidates" in done.stdout
+    assert "1 already in the library" in done.stdout

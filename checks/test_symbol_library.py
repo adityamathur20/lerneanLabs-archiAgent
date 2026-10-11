@@ -5,6 +5,7 @@ is derived from the anchor and bounded by the template's declared size range.
 """
 import math
 import unittest
+from unittest import mock
 
 from archiagent.classify.library_templates import match_library_templates, normalise
 from archiagent.geometry.candidacy import yields_to_walls
@@ -100,3 +101,38 @@ class SymbolLibraryChecks(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- an over-budget template is skipped, not fatal -------------------------------
+
+SQUARE = ((0, 0), (1, 0), (1, 1), (0, 1), (0, 0))      # a closed four-segment shape: its own anchor group
+
+
+class BudgetChecks(unittest.TestCase):
+    def two_templates(self):
+        return [template(id="common-l"), template(SQUARE, id="rare-square")]
+
+    def test_a_template_over_the_trial_budget_is_skipped_with_a_warning_and_the_rest_still_match(self):
+        ps = drawing([primitive("l1", L_SHAPE), primitive("l2", transform(L_SHAPE, 0, (30, 0), 1)),
+                      primitive("l3", transform(L_SHAPE, 0, (60, 0), 1)), primitive("sq", SQUARE)])
+        # common-l has 3 anchor spots x 4 angles = 12 trials; rare-square has 1 x 4 = 4.
+        symbols, issues = match_library_templates(ps, 1, self.two_templates(), max_candidates=5)
+        self.assertEqual({s.source_ids for s in symbols}, {("sq",)})
+        skipped = [i for i in issues if i.code == "library_template_skipped"]
+        self.assertEqual([i.entity for i in skipped], ["common-l"])
+        self.assertEqual(skipped[0].severity, "warn")
+        self.assertIn("common-l", skipped[0].msg)
+
+    def test_the_default_budget_leaves_both_matching(self):
+        ps = drawing([primitive("l1", L_SHAPE), primitive("sq", SQUARE)])
+        symbols, issues = match_library_templates(ps, 1, self.two_templates())
+        self.assertEqual({s.source_ids for s in symbols}, {("l1",), ("sq",)})
+        self.assertEqual([i for i in issues if i.code == "library_template_skipped"], [])
+
+    def test_an_exhausted_comparison_budget_skips_instead_of_failing_the_run(self):
+        from archiagent.classify import library_templates
+        ps = drawing([primitive("l1", L_SHAPE), primitive("l2", transform(L_SHAPE, 0, (30, 0), 1))])
+        with mock.patch.object(library_templates, "MAX_MATCH_OPERATIONS", 0):
+            symbols, issues = match_library_templates(ps, 1, [template()])
+        self.assertEqual(symbols, ())
+        self.assertEqual([i.code for i in issues], ["library_template_skipped"])
