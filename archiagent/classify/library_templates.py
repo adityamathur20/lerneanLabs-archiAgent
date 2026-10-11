@@ -28,6 +28,11 @@ from archiagent.semantic import SymbolInstance
 # proportional slack, not the same absolute tolerance.
 TOLERANCE_FRACTION = 0.03
 MAX_MATCH_OPERATIONS = 200_000
+
+
+class LibraryBudgetExceeded(ValueError):
+    """A template cost more to match than the budget allows. The caller skips that template."""
+
 CATEGORIES = {"fill", "curve", "closed", "path"}
 DEFAULT_LIBRARY = Path(__file__).resolve().parents[1] / "data" / "symbol_library.json"
 
@@ -170,7 +175,7 @@ def _trial(seed, anchor, index, candidates, keys, centers, scale, mirror, angle,
             j = int(j)
             operations += 1
             if operations > MAX_MATCH_OPERATIONS:
-                raise ValueError("library comparison budget exceeded; narrow the source region or templates")
+                raise LibraryBudgetExceeded("the comparison budget for this drawing is used up")
             if j in taken or keys[j] != part.key:
                 continue
             distance = expected.hausdorff_distance(candidates[j].geometry)
@@ -225,42 +230,54 @@ def match_library_templates(ps, units_per_foot, templates, *, max_candidates=500
     results, issues, operations = {}, [], 0
 
     for record in sorted(records, key=lambda r: r["id"]):
-        seed = _template_parts(record)
-        # A holed part's length sums its rings, and ring closure differs between
-        # drawings, so the scale it implies is unreliable: anchor on a simple
-        # part whenever one is equally selective.
-        anchor = min(seed, key=lambda t: (len(by_key.get(t.key, ())), t.holes > 0, -t.length, t.points))
-        possible = tuple(by_key.get(anchor.key, ()))
-        angles, mirrors = record["rotations_deg"], (False, True) if record["mirror_allowed"] else (False,)
-        if len(possible)*len(angles)*len(mirrors) > max_candidates:
-            raise ValueError(f"library template {record['id']} candidate budget exceeded; "
-                             "narrow the source region or layers")
-        low, high = record["size_ft"]["min"], record["size_ft"]["max"]
-        for index in possible:
-            scale = candidates[index].length / anchor.length
-            if not math.isfinite(scale) or scale <= 0:
-                continue
-            if not low <= scale <= high:
-                issues.append(Issue("info", candidates[index].source_id, "symbol_size_out_of_range",
-                                    f"{record['id']}: {scale:.3f} ft lies outside {low}-{high} ft"))
-                continue
-            tolerance = TOLERANCE_FRACTION * scale
-            for mirror in mirrors:
-                for angle in angles:
-                    chosen, operations = _trial(seed, anchor, index, candidates, keys, centers,
-                                                scale, mirror, angle, tolerance, operations)
-                    if chosen is None:
-                        continue
-                    member_ids = tuple(sorted({p.source_id for p in chosen}))
-                    if member_ids in results:
-                        continue
-                    counts = Counter(p.source_id for p in chosen)
-                    # Never claim only part of an entity then erase its remainder.
-                    if any(count != source_counts[sid] for sid, count in counts.items()):
-                        continue
-                    symbol = _symbol(record, chosen, scale, mirror, angle)
-                    if symbol is not None:
-                        results[member_ids] = symbol
+        before = set(results)
+        try:
+            seed = _template_parts(record)
+            # A holed part's length sums its rings, and ring closure differs between
+            # drawings, so the scale it implies is unreliable: anchor on a simple
+            # part whenever one is equally selective.
+            anchor = min(seed, key=lambda t: (len(by_key.get(t.key, ())), t.holes > 0, -t.length, t.points))
+            possible = tuple(by_key.get(anchor.key, ()))
+            angles, mirrors = record["rotations_deg"], (False, True) if record["mirror_allowed"] else (False,)
+            if len(possible)*len(angles)*len(mirrors) > max_candidates:
+                raise LibraryBudgetExceeded(f"it would need {len(possible)*len(angles)*len(mirrors)} trials "
+                                            f"in this drawing (limit {max_candidates}); fewer rotations or no "
+                                            "mirror would fit")
+            low, high = record["size_ft"]["min"], record["size_ft"]["max"]
+            for index in possible:
+                scale = candidates[index].length / anchor.length
+                if not math.isfinite(scale) or scale <= 0:
+                    continue
+                if not low <= scale <= high:
+                    issues.append(Issue("info", candidates[index].source_id, "symbol_size_out_of_range",
+                                        f"{record['id']}: {scale:.3f} ft lies outside {low}-{high} ft"))
+                    continue
+                tolerance = TOLERANCE_FRACTION * scale
+                for mirror in mirrors:
+                    for angle in angles:
+                        chosen, operations = _trial(seed, anchor, index, candidates, keys, centers,
+                                                    scale, mirror, angle, tolerance, operations)
+                        if chosen is None:
+                            continue
+                        member_ids = tuple(sorted({p.source_id for p in chosen}))
+                        if member_ids in results:
+                            continue
+                        counts = Counter(p.source_id for p in chosen)
+                        # Never claim only part of an entity then erase its remainder.
+                        if any(count != source_counts[sid] for sid, count in counts.items()):
+                            continue
+                        symbol = _symbol(record, chosen, scale, mirror, angle)
+                        if symbol is not None:
+                            results[member_ids] = symbol
+        except LibraryBudgetExceeded as exc:
+            # A shape that is common in this drawing is skipped, not fatal: what it
+            # would have matched is simply not recognised, and the run goes on.
+            for ids in set(results) - before:
+                del results[ids]
+            if "comparison budget" in str(exc):
+                operations = MAX_MATCH_OPERATIONS     # the rest are skipped at once
+            issues.append(Issue("warn", record["id"], "library_template_skipped",
+                                f"library template {record['id']} skipped: {exc}"))
     # One stroke cannot belong to two symbols; overlapping claims need review.
     claims = Counter(sid for ids in results for sid in ids)
     symbols = tuple(sorted((s for ids, s in results.items() if all(claims[sid] == 1 for sid in ids)),

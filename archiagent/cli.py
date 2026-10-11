@@ -360,6 +360,15 @@ def _unmatched_wall_names(names: list[str], stats) -> list[str]:
     return [n for n in names if n not in known]
 
 
+def _hide_approved(args, candidates):
+    """Candidates the approved library does not already hold, and how many it did."""
+    from archiagent.classify.symbol_harvest import hide_approved
+    if args.no_symbol_library:
+        return tuple(candidates), 0
+    library = _configuration(lambda: load_library(args.symbol_library), "symbol library")
+    return hide_approved(tuple(candidates), library)
+
+
 def _harvest_limit(args) -> dict:
     """Only what the user set: harvest() owns the default."""
     return {} if args.harvest_min_instances is None else {"min_instances": args.harvest_min_instances}
@@ -905,13 +914,15 @@ def _main(argv: list[str] | None = None) -> int:
             # units are only a claim, and absent on some drawings.
             harvest_scale, _, _ = _resolve_scale(args, ps, is_dxf, None, units_per_foot)
             candidates = merge(existing, harvest(ps, harvest_scale, **_harvest_limit(args)))
+            candidates, hidden = _hide_approved(args, candidates)
             cache.mkdir(parents=True, exist_ok=True)
             store.write_text(json.dumps(candidates, indent=2))
             previews = sum(write_preview(c, cache / f"{c['id']}.png") is not None
                            for c in candidates)
             print(f"{len(candidates)} candidates -> {store}"
                   + (f"; {previews} previews" if previews else
-                     "; previews need the vision extra (matplotlib)"))
+                     "; previews need the vision extra (matplotlib)")
+                  + (f"; {hidden} already in the library, hidden" if hidden else ""))
             for c in candidates:
                 size = c["size_ft"]
                 print(f"  {c['id']:28s} {c['found_by']:9s} parts={len(c['geometry']):3d} "
@@ -974,7 +985,7 @@ def _main(argv: list[str] | None = None) -> int:
             classifier_issues.append(Issue("info", "symbols", "symbol_library_empty",
                                            "no reviewed symbol templates; run --harvest-symbols to propose some"))
         models=[];sources=[]
-        harvested, harvest_scale = (), None
+        harvested, harvest_scale, hidden = (), None, 0
         for plan_index, region in enumerate(regions, 1):
             source = select_region(ps,region) if region else ps
             selected_scale, scale_rung, scale_issues = _configuration(
@@ -985,6 +996,7 @@ def _main(argv: list[str] | None = None) -> int:
             if args.harvest_symbols_to and is_dxf:
                 from archiagent.classify.symbol_harvest import harvest, merge
                 harvested = merge(harvested, harvest(source, selected_scale, **_harvest_limit(args)))
+                harvested, hidden = _hide_approved(args, harvested)
                 harvest_scale = selected_scale
             if scale_rung == "asserted" and len(_wall_length_measurements(args)) == 1 \
                     and not any(i.code == "asserted_scale_overrides_extracted" for i in scale_issues):
@@ -1021,7 +1033,8 @@ def _main(argv: list[str] | None = None) -> int:
             target.write_text(json.dumps({"schema_version": 1, "source_sha256": ps.source_sha256,
                                           "units_per_foot": harvest_scale,
                                           "candidates": list(harvested)}, indent=2))
-            print(f"symbols {len(harvested)} candidates -> {target}")
+            print(f"symbols {len(harvested)} candidates -> {target}"
+                  + (f"; {hidden} already in the library, hidden" if hidden else ""))
         reference_evaluation = None
         if args.reference_file:
             reference = load_reference(args.reference_file, sources[0], regions[0])

@@ -99,3 +99,49 @@ def test_the_limit_must_be_a_positive_whole_number(tmp_path):
     done = harvest_only(tmp_path, "--harvest-min-instances", "0")
     assert done.returncode == 3
     assert "--harvest-min-instances" in done.stderr
+
+
+# --- already-approved shapes are not proposed again ---------------------------
+
+def test_hide_approved_matches_on_the_shape_digest_not_the_kind_prefix():
+    from archiagent.classify.symbol_harvest import hide_approved
+    found = [{"id": "unreviewed-18bd23f2"}, {"id": "unreviewed-aaaaaaaa"}, {"id": "furniture-bbbbbbbb"}]
+    library = [{"id": "vegetation-18bd23f2", "approved_from": "unreviewed-18bd23f2"},
+               {"id": "furniture-bbbbbbbb"}]
+    shown, hidden = hide_approved(found, library)
+    assert [c["id"] for c in shown] == ["unreviewed-aaaaaaaa"]
+    assert hidden == 2
+
+
+def test_a_library_is_not_needed_to_harvest():
+    from archiagent.classify.symbol_harvest import hide_approved
+    found = [{"id": "unreviewed-18bd23f2"}]
+    shown, hidden = hide_approved(found, ())
+    assert list(shown) == found and hidden == 0
+
+
+def approved_library_for(path: Path, drawing: Path) -> Path:
+    """Harvest the drawing, approve what it finds, write that as a library."""
+    out = path / "first"
+    done = run("--dxfFilePath", str(drawing), "--outputDir", str(out), "--harvest-symbols",
+               "--harvest-min-instances", "4", "--scale-from-wall", "0", "0", "480", "0", "40ft")
+    assert done.returncode == 0, done.stderr[-1500:]
+    found = json.loads((drawing.parent / ".archiagent-cache" / "symbols" / "candidates.json").read_text())
+    template = {**found[0], "kind": "furniture", "status": "reviewed", "reviewed_by": "test"}
+    library = path / "library.json"
+    library.write_text(json.dumps({"schema_version": 1, "templates": [template]}))
+    return library
+
+
+def test_a_harvest_run_hides_what_the_library_already_holds(tmp_path):
+    drawing = unnamed_blocks(tmp_path / "plan.dxf", 5)
+    library = approved_library_for(tmp_path, drawing)
+    again = tmp_path / "again"
+    again.mkdir()
+    second = unnamed_blocks(again / "plan.dxf", 5)
+    done = run("--dxfFilePath", str(second), "--outputDir", str(again / "out"), "--harvest-symbols",
+               "--harvest-min-instances", "4", "--symbol-library", str(library),
+               "--scale-from-wall", "0", "0", "480", "0", "40ft")
+    assert done.returncode == 0, done.stderr[-1500:]
+    assert "0 candidates" in done.stdout
+    assert "1 already in the library" in done.stdout
