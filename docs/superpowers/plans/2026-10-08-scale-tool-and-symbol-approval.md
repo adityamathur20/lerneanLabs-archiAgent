@@ -99,7 +99,7 @@ States: `pending` → **`preparing`** → **`ready`** → `queued` → `running`
 **Files:** `service/archiagent_service/{models,symbols}.py`, migration, tests
 
 - [ ] Table `symbol_templates`: `id` (archiAgent's shape digest id, so the same glyph from two tenants is one row), `kind`, `subtype`, `label`, `geometry` (JSON), `size_min_ft`, `size_max_ft`, `mirror_allowed`, `rotations_deg`, `status` (`candidate`/`approved`/`rejected`), `found_by`, `instances` (summed), `jobs` (count), `reviewed_by`, `reviewed_at`, timestamps.
-- [ ] Worker passes `--harvest-symbols-to plan.symbols.json` on every DXF/DWG run and upserts: new shapes become candidates; known shapes add instances and widen the size range; **a rejected shape stays rejected**.
+- [ ] **Owner decision 2026-10-12: harvesting is not offered to customers and does not run on their jobs.** It is a backend action the owner triggers when needed (a worker flag or a script that runs `--harvest-symbols-to` on a stored drawing), never a default and never visible in the web UI. The upsert below is unchanged: new shapes become candidates; known shapes add instances and widen the size range; **a rejected shape stays rejected**; shapes already in the approved library are not proposed again (`hide_approved`).
 
 ### Task B3: the owner's review page
 
