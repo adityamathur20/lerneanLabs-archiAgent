@@ -115,8 +115,9 @@ class BudgetChecks(unittest.TestCase):
     def test_a_template_over_the_trial_budget_is_skipped_with_a_warning_and_the_rest_still_match(self):
         ps = drawing([primitive("l1", L_SHAPE), primitive("l2", transform(L_SHAPE, 0, (30, 0), 1)),
                       primitive("l3", transform(L_SHAPE, 0, (60, 0), 1)), primitive("sq", SQUARE)])
-        # common-l has 3 anchor spots x 4 angles = 12 trials; rare-square has 1 x 4 = 4.
-        symbols, issues = match_library_templates(ps, 1, self.two_templates(), max_candidates=5)
+        # common-l has 3 anchor spots: even one orientation (3 trials) exceeds a limit of 2.
+        # rare-square has 1 spot: its 4 default angles do not fit, one does, so it is reduced.
+        symbols, issues = match_library_templates(ps, 1, self.two_templates(), max_candidates=2)
         self.assertEqual({s.source_ids for s in symbols}, {("sq",)})
         skipped = [i for i in issues if i.code == "library_template_skipped"]
         self.assertEqual([i.entity for i in skipped], ["common-l"])
@@ -173,3 +174,56 @@ class SpaceTypeChecks(unittest.TestCase):
         symbols, issues = match_library_templates(ps, 1, [template(kind="annotation", subtype="compass")])
         self.assertEqual([s.kind for s in symbols], ["annotation"])
         self.assertEqual(issues, ())
+
+# --- an over-budget template is matched at fewer orientations before it is skipped ---
+
+class FitOrientationChecks(unittest.TestCase):
+    ALL = tuple(i * 22.5 for i in range(16))
+
+    def fit(self, anchors, angles=None, mirror=True, budget=5000):
+        from archiagent.classify.library_templates import fit_orientations
+        return fit_orientations(tuple(angles if angles is not None else self.ALL), mirror, anchors, budget)
+
+    def test_what_fits_is_left_alone(self):
+        angles, mirrors = self.fit(anchors=100)            # 100 x 16 x 2 = 3200
+        self.assertEqual(angles, self.ALL)
+        self.assertEqual(mirrors, (False, True))
+
+    def test_mirror_is_dropped_before_angles_when_that_is_enough(self):
+        angles, mirrors = self.fit(anchors=250)             # 250 x 32 > 5000, 250 x 16 = 4000
+        self.assertEqual(angles, self.ALL)
+        self.assertEqual(mirrors, (False,))
+
+    def test_then_every_45_degrees(self):
+        angles, mirrors = self.fit(anchors=600)             # 16 x 600 > 5000; 5 angles + mirror = 6000 > 5000; 8 x 600 = 4800
+        self.assertEqual(angles, (0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0))
+        self.assertEqual(mirrors, (False,))
+
+    def test_then_the_five_axis_and_diagonal_angles(self):
+        angles, mirrors = self.fit(anchors=900, mirror=False)   # 8 x 900 = 7200; 5 x 900 = 4500
+        self.assertEqual(angles, (0.0, 45.0, 90.0, 180.0, 270.0))
+        self.assertEqual(mirrors, (False,))
+
+    def test_then_one_angle(self):
+        angles, mirrors = self.fit(anchors=4000, mirror=False)
+        self.assertEqual(angles, (0.0,))
+
+    def test_it_never_adds_an_angle_the_reviewer_did_not_allow(self):
+        angles, _ = self.fit(anchors=3000, angles=(0.0, 90.0), mirror=False)   # 2 x 3000 > 5000
+        self.assertEqual(angles, (0.0,))
+        angles, _ = self.fit(anchors=1000, angles=(90.0, 180.0), mirror=False)  # no 0 declared: the smallest is kept
+        self.assertTrue(set(angles) <= {90.0, 180.0})
+
+    def test_too_common_even_for_one_angle_is_none(self):
+        self.assertIsNone(self.fit(anchors=6000, mirror=False))
+
+    def test_the_run_reduces_instead_of_skipping_and_says_so(self):
+        ps = drawing([primitive("l1", L_SHAPE), primitive("l2", transform(L_SHAPE, 0, (30, 0), 1)),
+                      primitive("l3", transform(L_SHAPE, 0, (60, 0), 1))])
+        # 3 anchor spots x 4 default angles = 12 trials > 5, but 3 x 1 = 3 fits.
+        symbols, issues = match_library_templates(ps, 1, [template()], max_candidates=5)
+        self.assertEqual({s.source_ids for s in symbols}, {("l1",), ("l2",), ("l3",)})
+        reduced = [i for i in issues if i.code == "library_template_reduced"]
+        self.assertEqual(len(reduced), 1)
+        self.assertEqual(reduced[0].severity, "info")
+        self.assertEqual([i for i in issues if i.code == "library_template_skipped"], [])

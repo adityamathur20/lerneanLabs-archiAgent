@@ -227,6 +227,33 @@ def _symbol(record, parts, scale, mirror, angle):
                                         if record.get("space_types") else ())))
 
 
+def fit_orientations(angles, mirror_allowed, anchors, budget):
+    """The most orientations a template may be tried at within the trial budget.
+
+    A template declares the most it may try (angles, mirror). When that costs
+    more than the budget in this drawing, try fewer rather than none: first every
+    45 degrees, then 0/45/90/180/270, then a single angle; mirror is kept as long
+    as the budget allows. It never adds an orientation the reviewer did not allow.
+    Returns (angles, mirrors) or None when even one orientation does not fit.
+    """
+    declared = tuple(sorted(float(a) % 360 for a in angles))
+    on_45 = tuple(a for a in declared if a % 45 == 0)
+    axes = tuple(a for a in declared if a in (0.0, 45.0, 90.0, 180.0, 270.0))
+    one = ((0.0,) if 0.0 in declared else declared[:1])
+    sets = []
+    for s in (declared, on_45, axes, one):
+        if s and s not in sets:
+            sets.append(s)
+    mirror_options = ((False, True), (False,)) if mirror_allowed else ((False,),)
+    combos = [(s, m) for s in sets for m in mirror_options]
+    # Most trials first: the widest coverage the budget allows.
+    combos.sort(key=lambda c: (-len(c[0]) * len(c[1]), -len(c[0]), -len(c[1])))
+    for s, m in combos:
+        if anchors * len(s) * len(m) <= budget:
+            return s, m
+    return None
+
+
 def match_library_templates(ps, units_per_foot, templates, *, max_candidates=5000
                             ) -> tuple[tuple[SymbolInstance, ...], tuple[Issue, ...]]:
     """Match reviewed library shapes at any uniform scale within their size range."""
@@ -257,11 +284,17 @@ def match_library_templates(ps, units_per_foot, templates, *, max_candidates=500
             # part whenever one is equally selective.
             anchor = min(seed, key=lambda t: (len(by_key.get(t.key, ())), t.holes > 0, -t.length, t.points))
             possible = tuple(by_key.get(anchor.key, ()))
-            angles, mirrors = record["rotations_deg"], (False, True) if record["mirror_allowed"] else (False,)
-            if len(possible)*len(angles)*len(mirrors) > max_candidates:
-                raise LibraryBudgetExceeded(f"it would need {len(possible)*len(angles)*len(mirrors)} trials "
-                                            f"in this drawing (limit {max_candidates}); fewer rotations or no "
-                                            "mirror would fit")
+            declared = (tuple(record["rotations_deg"]), (False, True) if record["mirror_allowed"] else (False,))
+            fitted = fit_orientations(declared[0], record["mirror_allowed"], len(possible), max_candidates)
+            if fitted is None:
+                raise LibraryBudgetExceeded(f"it has {len(possible)} possible anchor spots in this drawing; even "
+                                            f"one orientation exceeds the limit of {max_candidates} trials")
+            angles, mirrors = fitted
+            if (angles, mirrors) != declared:
+                issues.append(Issue("info", record["id"], "library_template_reduced",
+                                    f"library template {record['id']} was matched at {len(angles)} of "
+                                    f"{len(declared[0])} orientations{'' if mirrors == declared[1] else ' and without mirroring'}"
+                                    f" to fit the budget in this drawing ({len(possible)} anchor spots)"))
             low, high = record["size_ft"]["min"], record["size_ft"]["max"]
             for index in possible:
                 scale = candidates[index].length / anchor.length
