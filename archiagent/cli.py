@@ -1093,6 +1093,15 @@ def _main(argv: list[str] | None = None) -> int:
                         "ocr_enabled": args.ocr, "page": args.page,
                         "layer_mode": "explicit" if args.walls else "rules" if args.rules else "provider"})
             print(f"interpretation {interpretation}")
+            if symbol_library:
+                from archiagent.classify.library_usage import library_usage
+                usage = library_usage([s for m in models for s in m.symbols],
+                                      [i for m in models for i in m.issues], symbol_library,
+                                      source_sha256=ps.source_sha256,
+                                      units_per_foot=models[0].scale.units_per_foot)
+                usage_path = out_path.with_suffix(".symbol-usage.json")
+                usage_path.write_text(json.dumps(usage, indent=2))
+                print(f"symbol usage {usage_path}")
             if args.freeze_only:
                 rejected = args.require_accepted and any(i.severity == "error" for m in models for i in m.issues)
                 print("frozen interpretation saved; IFC not authored; assumptions and unresolved issues are retained")

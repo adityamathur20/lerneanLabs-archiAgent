@@ -103,19 +103,38 @@ def test_the_limit_must_be_a_positive_whole_number(tmp_path):
 
 # --- already-approved shapes are not proposed again ---------------------------
 
-def test_hide_approved_matches_on_the_shape_digest_not_the_kind_prefix():
+def square(side=1.0, offset=0.0):
+    pts = [[offset, 0], [offset + side, 0], [offset + side, side], [offset, side], [offset, 0]]
+    return [{"category": "closed", "points": pts, "holes": []}]
+
+
+def bar():
+    return [{"category": "closed", "points": [[0, 0], [1, 0], [1, .1], [0, .1], [0, 0]], "holes": []}]
+
+
+def test_hide_approved_matches_on_the_shape_itself_not_its_id():
     from archiagent.classify.symbol_harvest import hide_approved
-    found = [{"id": "unreviewed-18bd23f2"}, {"id": "unreviewed-aaaaaaaa"}, {"id": "furniture-bbbbbbbb"}]
-    library = [{"id": "vegetation-18bd23f2", "approved_from": "unreviewed-18bd23f2"},
-               {"id": "furniture-bbbbbbbb"}]
+    found = [{"id": "unreviewed-aaaaaaaa", "geometry": square()},
+             {"id": "unreviewed-bbbbbbbb", "geometry": bar()}]
+    library = [{"id": "furniture-zzzzzzzz", "approved_from": "unreviewed-qqqqqqqq", "geometry": square(3.0)}]
     shown, hidden = hide_approved(found, library)
-    assert [c["id"] for c in shown] == ["unreviewed-aaaaaaaa"]
-    assert hidden == 2
+    # The square is the same shape at another scale: hidden. The bar has the same
+    # part structure (one closed four-sided path) but is another shape: still shown.
+    assert [c["id"] for c in shown] == ["unreviewed-bbbbbbbb"]
+    assert hidden == 1
+
+
+def test_the_same_id_digest_does_not_hide_a_different_shape():
+    from archiagent.classify.symbol_harvest import hide_approved
+    found = [{"id": "unreviewed-18bd23f2", "geometry": bar()}]
+    library = [{"id": "vegetation-18bd23f2", "approved_from": "unreviewed-18bd23f2", "geometry": square()}]
+    shown, hidden = hide_approved(found, library)
+    assert [c["id"] for c in shown] == ["unreviewed-18bd23f2"] and hidden == 0
 
 
 def test_a_library_is_not_needed_to_harvest():
     from archiagent.classify.symbol_harvest import hide_approved
-    found = [{"id": "unreviewed-18bd23f2"}]
+    found = [{"id": "unreviewed-18bd23f2", "geometry": square()}]
     shown, hidden = hide_approved(found, ())
     assert list(shown) == found and hidden == 0
 
