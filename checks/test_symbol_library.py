@@ -178,29 +178,26 @@ class SpaceTypeChecks(unittest.TestCase):
 # --- an over-budget template is matched at fewer orientations before it is skipped ---
 
 class FitOrientationChecks(unittest.TestCase):
-    ALL = tuple(i * 22.5 for i in range(16))
+    ALL = (0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0)       # the supported set
 
     def fit(self, anchors, angles=None, mirror=True, budget=5000):
         from archiagent.classify.library_templates import fit_orientations
         return fit_orientations(tuple(angles if angles is not None else self.ALL), mirror, anchors, budget)
 
     def test_what_fits_is_left_alone(self):
-        angles, mirrors = self.fit(anchors=100)            # 100 x 16 x 2 = 3200
+        angles, mirrors = self.fit(anchors=100)            # 100 x 7 x 2 = 1400
         self.assertEqual(angles, self.ALL)
         self.assertEqual(mirrors, (False, True))
 
-    def test_mirror_is_dropped_before_angles_when_that_is_enough(self):
-        angles, mirrors = self.fit(anchors=250)             # 250 x 32 > 5000, 250 x 16 = 4000
-        self.assertEqual(angles, self.ALL)
-        self.assertEqual(mirrors, (False,))
-
-    def test_then_every_45_degrees(self):
-        angles, mirrors = self.fit(anchors=600)             # 16 x 600 > 5000; 5 angles + mirror = 6000 > 5000; 8 x 600 = 4800
-        self.assertEqual(angles, (0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0))
-        self.assertEqual(mirrors, (False,))
+    def test_the_most_orientations_that_fit_are_used(self):
+        # 500 x 14 = 7000 > 5000. Five axis and diagonal angles with mirror is 10 trials a spot
+        # (5000); all seven angles without mirror is 7 (3500). The wider coverage wins.
+        angles, mirrors = self.fit(anchors=500)
+        self.assertEqual(angles, (0.0, 45.0, 90.0, 180.0, 270.0))
+        self.assertEqual(mirrors, (False, True))
 
     def test_then_the_five_axis_and_diagonal_angles(self):
-        angles, mirrors = self.fit(anchors=900, mirror=False)   # 8 x 900 = 7200; 5 x 900 = 4500
+        angles, mirrors = self.fit(anchors=900)             # 900 x 7 = 6300; 5 angles + mirror 9000; 5 x 900 = 4500
         self.assertEqual(angles, (0.0, 45.0, 90.0, 180.0, 270.0))
         self.assertEqual(mirrors, (False,))
 
@@ -211,11 +208,17 @@ class FitOrientationChecks(unittest.TestCase):
     def test_it_never_adds_an_angle_the_reviewer_did_not_allow(self):
         angles, _ = self.fit(anchors=3000, angles=(0.0, 90.0), mirror=False)   # 2 x 3000 > 5000
         self.assertEqual(angles, (0.0,))
-        angles, _ = self.fit(anchors=1000, angles=(90.0, 180.0), mirror=False)  # no 0 declared: the smallest is kept
+        angles, _ = self.fit(anchors=3000, angles=(90.0, 180.0), mirror=False)
         self.assertTrue(set(angles) <= {90.0, 180.0})
 
     def test_too_common_even_for_one_angle_is_none(self):
         self.assertIsNone(self.fit(anchors=6000, mirror=False))
+
+    def test_an_unsupported_angle_is_refused_at_load(self):
+        from archiagent.classify.library_templates import _validated
+        with self.assertRaisesRegex(ValueError, "rotation"):
+            _validated(template(rotations_deg=[0, 22.5]))
+        self.assertEqual(_validated(template(rotations_deg=[0, 45, 135]))["rotations_deg"], (0.0, 45.0, 135.0))
 
     def test_the_run_reduces_instead_of_skipping_and_says_so(self):
         ps = drawing([primitive("l1", L_SHAPE), primitive("l2", transform(L_SHAPE, 0, (30, 0), 1)),
@@ -227,3 +230,64 @@ class FitOrientationChecks(unittest.TestCase):
         self.assertEqual(len(reduced), 1)
         self.assertEqual(reduced[0].severity, "info")
         self.assertEqual([i for i in issues if i.code == "library_template_skipped"], [])
+
+
+# --- spots that cannot match are not counted against the budget -----------------------
+
+SMALL_SQUARE = ((4, 0), (5, 0), (5, 1), (4, 1), (4, 0))
+
+
+def two_part_template(first, second, **kw):
+    record = template(**kw)
+    record["geometry"] = normalise([{"category": "closed", "points": first, "holes": []},
+                                    {"category": "closed", "points": second, "holes": []}])
+    return record
+
+
+class PrefilterChecks(unittest.TestCase):
+    def test_spots_outside_the_size_range_do_not_use_the_budget(self):
+        # 8 big copies and one in range. Counted, 9 spots x 4 angles exceed a limit of 4;
+        # only the in-range one counts, so it is matched at all four angles with no reduction.
+        parts = [primitive(f"big{i}", transform(L_SHAPE, 0, (40 * i, 0), 5)) for i in range(8)]
+        ps = drawing(parts + [primitive("fit", transform(L_SHAPE, 0, (0, 60), 1))])
+        symbols, issues = match_library_templates(ps, 1, [template(size_ft={"min": 2.0, "max": 4.0})],
+                                                  max_candidates=4)
+        self.assertEqual({s.source_ids for s in symbols}, {("fit",)})
+        self.assertEqual([i for i in issues if i.code in ("library_template_reduced", "library_template_skipped")], [])
+        out = [i for i in issues if i.code == "symbol_size_out_of_range"]
+        self.assertEqual(len(out), 1)                       # one summary per template, not one per spot
+        self.assertIn("8", out[0].msg)
+
+    def test_a_same_kind_of_shape_with_a_different_form_is_not_a_spot(self):
+        # Closed four-sided shapes: a unit square and long thin bars (a quite different form).
+        bars = [primitive(f"bar{i}", ((30 * i, 0), (30 * i + 4, 0), (30 * i + 4, .5), (30 * i, .5), (30 * i, 0)))
+                for i in range(10)]
+        ps = drawing(bars + [primitive("sq", transform(SQUARE, 0, (0, 40), 1))])
+        # 11 spots share the key. Counted, 11 x 1 angle > 4; by form only the square is a spot.
+        symbols, issues = match_library_templates(ps, 1, [template(SQUARE)], max_candidates=4)
+        self.assertEqual({s.source_ids for s in symbols}, {("sq",)})
+        self.assertEqual([i for i in issues if i.code in ("library_template_reduced", "library_template_skipped")], [])
+
+    def test_a_lone_shape_without_its_neighbours_is_not_a_spot(self):
+        # The template is an L with a zigzag 4 ft to its right: two parts of the same key, the
+        # L the longer so it is the anchor. Ten lone Ls, one real group.
+        z_right = tuple((x + 4, y) for x, y in ZIGZAG)
+        lone = [primitive(f"lone{i}", transform(L_SHAPE, 0, (0, 30 + 20 * i), 1)) for i in range(10)]
+        group = [primitive("l", L_SHAPE), primitive("z", z_right)]
+        ps = drawing(lone + group)
+        record = two_part_template(L_SHAPE, z_right, size_ft={"min": 0.5, "max": 20.0})
+        # With only the group's L and zigzag as spots, 2 x 4 angles = 8 fits. Counting all 12
+        # same-key parts it would be 48, and the template would be reduced.
+        symbols, issues = match_library_templates(ps, 1, [record], max_candidates=8)
+        self.assertEqual({s.source_ids for s in symbols}, {("l", "z")})
+        self.assertEqual([i for i in issues if i.code in ("library_template_reduced", "library_template_skipped")], [])
+
+    def test_the_comparison_budget_is_per_template_not_per_run(self):
+        from archiagent.classify import library_templates
+        ps = drawing([primitive("a", L_SHAPE), primitive("b", SQUARE)])
+        both = [template(id="a-l"), template(SQUARE, id="b-sq")]
+        # Each template needs a handful of comparisons; a budget that one template fits in but
+        # two together would not must not starve the second.
+        with mock.patch.object(library_templates, "MAX_MATCH_OPERATIONS", 12):
+            symbols, issues = match_library_templates(ps, 1, both)
+        self.assertEqual({s.source_ids for s in symbols}, {("a",), ("b",)})

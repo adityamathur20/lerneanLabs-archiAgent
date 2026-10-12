@@ -113,24 +113,37 @@ def harvest(ps, units_per_foot, *, min_instances: int = MIN_INSTANCES) -> tuple[
     return tuple(candidates)
 
 
-def _digest(identifier: str) -> str:
-    """The shape digest of an id: `unreviewed-18bd23f2`, `door-18bd23f2` -> `18bd23f2`."""
-    return str(identifier).rsplit("-", 1)[-1]
+def shape_fingerprint(geometry) -> str:
+    """What a normalised shape is, independent of scale, rotation and mirroring.
+
+    For each part: its kind and segment count, its share of the shape's total
+    length, and its length over its longest chord. An id digest is not enough: it
+    hashes only how many parts of each kind there are, so two different symbols
+    with the same part structure share it.
+    """
+    import math
+    from shapely.geometry import MultiPoint
+    items, total = [], 0.0
+    for path in geometry:
+        points = [tuple(p) for p in path["points"]]
+        holes = [[tuple(p) for p in ring] for ring in path.get("holes", ())]
+        length = sum(math.dist(a, b) for ring in (points, *holes) for a, b in zip(ring, ring[1:]))
+        hull = MultiPoint(points).convex_hull
+        ring = list(hull.exterior.coords) if hull.geom_type == "Polygon" else list(hull.coords)
+        diameter = max((math.dist(a, b) for a in ring for b in ring), default=0.0)
+        items.append((path["category"], len(points) - 1, len(holes), length, length / diameter if diameter else 0.0))
+        total += length
+    shaped = sorted((c, n, h, round(l / total, 2) if total else 0.0, round(f, 1)) for c, n, h, l, f in items)
+    return hashlib.sha256(json.dumps(shaped).encode()).hexdigest()[:16]
 
 
 def hide_approved(candidates, library) -> tuple[tuple[dict, ...], int]:
     """Drop candidates whose shape the library already holds.
 
-    A candidate's id ends in a digest of its shape; approving it renames the kind
-    prefix but keeps the digest (and records the old id), so the digest is the
-    identity. Returns what is still worth a reviewer's time, and how many hid.
+    Returns what is still worth a reviewer's time, and how many were hidden.
     """
-    held = set()
-    for template in library or ():
-        held.add(_digest(template.get("id", "")))
-        if template.get("approved_from"):
-            held.add(_digest(template["approved_from"]))
-    shown = tuple(c for c in candidates if _digest(c["id"]) not in held)
+    held = {shape_fingerprint(t["geometry"]) for t in library or () if t.get("geometry")}
+    shown = tuple(c for c in candidates if shape_fingerprint(c["geometry"]) not in held)
     return shown, len(candidates) - len(shown)
 
 

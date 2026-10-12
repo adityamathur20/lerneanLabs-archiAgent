@@ -16,7 +16,7 @@ import math
 from pathlib import Path
 
 from shapely import affinity
-from shapely.geometry import LineString, MultiLineString, Point
+from shapely.geometry import LineString, MultiLineString, MultiPoint, Point
 from shapely.strtree import STRtree
 
 from archiagent.classify.shapes import measure, parts_from
@@ -29,10 +29,19 @@ from archiagent.semantic import SymbolInstance
 TOLERANCE_FRACTION = 0.03
 MAX_MATCH_OPERATIONS = 200_000
 
+# The orientations a template may declare, in degrees. The owner's list; 315 is not in it.
+SUPPORTED_ANGLES = (0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0)
+DEFAULT_ANGLES = (0.0, 90.0, 180.0, 270.0)
+# A part's length over its longest chord does not change with scale, rotation or
+# mirroring; curve tessellation moves it by a few percent at most.
+SHAPE_TOLERANCE = 0.12
+NEIGHBOURS_CHECKED = 5
+
 # The kinds of space a library symbol can say it belongs in. A closed list, so a
 # typo is refused at load rather than silently never matching a room.
 SPACE_TYPES = frozenset({"living", "bedroom", "bathroom", "kitchen", "dining", "parking", "balcony",
-                         "terrace", "garden", "staircase", "utility", "store", "corridor", "any"})
+                         "terrace", "garden", "staircase", "utility", "store", "corridor", "pooja",
+                         "any"})
 SPACE_EVIDENCE = frozenset({"strong", "weak"})
 
 
@@ -136,10 +145,12 @@ def _validated(record):
     low, high = size.get("min"), size.get("max")
     if any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0 for v in (low, high)) or low > high:
         raise ValueError(f"library template {record['id']} needs a positive size_ft min <= max")
-    angles = record.get("rotations_deg", (0, 90, 180, 270))
-    if not isinstance(angles, (list, tuple)) or not 1 <= len(angles) <= 16 or any(
-            type(a) not in (int, float) or not math.isfinite(a) for a in angles):
-        raise ValueError(f"library template {record['id']} needs 1 to 16 finite rotations")
+    angles = record.get("rotations_deg", DEFAULT_ANGLES)
+    if not isinstance(angles, (list, tuple)) or not 1 <= len(angles) <= len(SUPPORTED_ANGLES) or any(
+            type(a) not in (int, float) or not math.isfinite(a) or float(a) % 360 not in SUPPORTED_ANGLES
+            for a in angles):
+        raise ValueError(f"library template {record['id']} needs 1 to {len(SUPPORTED_ANGLES)} rotations "
+                         f"from {[int(a) for a in SUPPORTED_ANGLES]} degrees")
     mirror = record.get("mirror_allowed", False)
     if not isinstance(mirror, bool):
         raise ValueError(f"library template {record['id']} mirror_allowed must be a boolean")
@@ -227,21 +238,33 @@ def _symbol(record, parts, scale, mirror, angle):
                                         if record.get("space_types") else ())))
 
 
+def _diameter(points) -> float:
+    """The longest chord of a part: its farthest pair of points, found on the hull."""
+    hull = MultiPoint(list(points)).convex_hull
+    ring = list(hull.exterior.coords) if hull.geom_type == "Polygon" else list(hull.coords)
+    return max((math.dist(a, b) for a in ring for b in ring), default=0.0)
+
+
+def _form(length: float, points) -> float | None:
+    """Length over longest chord: unchanged by scale, rotation and mirroring."""
+    diameter = _diameter(points)
+    return length / diameter if diameter > 0 else None
+
+
 def fit_orientations(angles, mirror_allowed, anchors, budget):
     """The most orientations a template may be tried at within the trial budget.
 
     A template declares the most it may try (angles, mirror). When that costs
-    more than the budget in this drawing, try fewer rather than none: first every
-    45 degrees, then 0/45/90/180/270, then a single angle; mirror is kept as long
-    as the budget allows. It never adds an orientation the reviewer did not allow.
-    Returns (angles, mirrors) or None when even one orientation does not fit.
+    more than the budget in this drawing, try fewer rather than none: the
+    0/45/90/180/270 set, then a single angle, each with and without mirror,
+    taking the most trials that fit. It never adds an orientation the reviewer
+    did not allow. Returns (angles, mirrors) or None when even one does not fit.
     """
     declared = tuple(sorted(float(a) % 360 for a in angles))
-    on_45 = tuple(a for a in declared if a % 45 == 0)
     axes = tuple(a for a in declared if a in (0.0, 45.0, 90.0, 180.0, 270.0))
     one = ((0.0,) if 0.0 in declared else declared[:1])
     sets = []
-    for s in (declared, on_45, axes, one):
+    for s in (declared, axes, one):
         if s and s not in sets:
             sets.append(s)
     mirror_options = ((False, True), (False,)) if mirror_allowed else ((False,),)
@@ -252,6 +275,55 @@ def fit_orientations(angles, mirror_allowed, anchors, budget):
         if anchors * len(s) * len(m) <= budget:
             return s, m
     return None
+
+
+def _anchor_spots(seed, anchor, by_key, candidates, centers, low, high):
+    """The candidate parts that could be this template's anchor, cheapest tests first.
+
+    Returns (spots, number outside the size range). A spot must (1) imply a size
+    inside the template's range, (2) have the anchor's form (length over longest
+    chord) and (3) have, at the distance the template puts them, the template's
+    other parts nearby. None of the three can reject a true match: each compares
+    something a placement leaves unchanged.
+    """
+    anchor_form = _form(anchor.length, anchor.points) if not anchor.holes and anchor.key[0] != "fill" else None
+    anchor_centre = anchor.geometry.centroid
+    others = [p for p in seed if p is not anchor]
+    # The rarest other parts reject the most; a few are enough.
+    others = sorted(others, key=lambda p: len(by_key.get(p.key, ())))[:NEIGHBOURS_CHECKED]
+    out = []
+    outside = 0
+    for index in by_key.get(anchor.key, ()):
+        part = candidates[index]
+        scale = part.length / anchor.length
+        if not math.isfinite(scale) or scale <= 0:
+            continue
+        if not low <= scale <= high:
+            outside += 1
+            continue
+        if anchor_form is not None and not part.holes:
+            form = _form(part.length, part.points)
+            if form is not None and abs(form - anchor_form) > SHAPE_TOLERANCE * anchor_form:
+                continue
+        slack = 3 * TOLERANCE_FRACTION * scale
+        centre = Point(part.center)
+        ok = True
+        for other in others:
+            reach = math.dist((anchor_centre.x, anchor_centre.y), (other.geometry.centroid.x,
+                                                                      other.geometry.centroid.y)) * scale
+            found = False
+            for j in centers.query(centre.buffer(reach + slack)):
+                j = int(j)
+                if j != index and _key(candidates[j].signature) == other.key and \
+                        abs(math.dist(candidates[j].center, part.center) - reach) <= slack:
+                    found = True
+                    break
+            if not found:
+                ok = False
+                break
+        if ok:
+            out.append(index)
+    return tuple(out), outside
 
 
 def match_library_templates(ps, units_per_foot, templates, *, max_candidates=5000
@@ -273,17 +345,25 @@ def match_library_templates(ps, units_per_foot, templates, *, max_candidates=500
     for i, key in enumerate(keys):
         by_key.setdefault(key, []).append(i)
     centers = STRtree([Point(p.center) for p in candidates])
-    results, issues, operations = {}, [], 0
+    results, issues = {}, []
 
     for record in sorted(records, key=lambda r: r["id"]):
         before = set(results)
+        operations = 0        # the comparison budget is per template
         try:
             seed = _template_parts(record)
             # A holed part's length sums its rings, and ring closure differs between
             # drawings, so the scale it implies is unreliable: anchor on a simple
             # part whenever one is equally selective.
+            # Every kind of part the template has must exist somewhere in the drawing.
+            if any(not by_key.get(t.key) for t in seed):
+                continue
             anchor = min(seed, key=lambda t: (len(by_key.get(t.key, ())), t.holes > 0, -t.length, t.points))
-            possible = tuple(by_key.get(anchor.key, ()))
+            low, high = record["size_ft"]["min"], record["size_ft"]["max"]
+            possible, outside = _anchor_spots(seed, anchor, by_key, candidates, centers, low, high)
+            if outside:
+                issues.append(Issue("info", record["id"], "symbol_size_out_of_range",
+                                    f"{record['id']}: {outside} candidate spots lie outside {low}-{high} ft"))
             declared = (tuple(record["rotations_deg"]), (False, True) if record["mirror_allowed"] else (False,))
             fitted = fit_orientations(declared[0], record["mirror_allowed"], len(possible), max_candidates)
             if fitted is None:
@@ -295,15 +375,8 @@ def match_library_templates(ps, units_per_foot, templates, *, max_candidates=500
                                     f"library template {record['id']} was matched at {len(angles)} of "
                                     f"{len(declared[0])} orientations{'' if mirrors == declared[1] else ' and without mirroring'}"
                                     f" to fit the budget in this drawing ({len(possible)} anchor spots)"))
-            low, high = record["size_ft"]["min"], record["size_ft"]["max"]
             for index in possible:
                 scale = candidates[index].length / anchor.length
-                if not math.isfinite(scale) or scale <= 0:
-                    continue
-                if not low <= scale <= high:
-                    issues.append(Issue("info", candidates[index].source_id, "symbol_size_out_of_range",
-                                        f"{record['id']}: {scale:.3f} ft lies outside {low}-{high} ft"))
-                    continue
                 tolerance = TOLERANCE_FRACTION * scale
                 for mirror in mirrors:
                     for angle in angles:
@@ -326,8 +399,6 @@ def match_library_templates(ps, units_per_foot, templates, *, max_candidates=500
             # would have matched is simply not recognised, and the run goes on.
             for ids in set(results) - before:
                 del results[ids]
-            if "comparison budget" in str(exc):
-                operations = MAX_MATCH_OPERATIONS     # the rest are skipped at once
             issues.append(Issue("warn", record["id"], "library_template_skipped",
                                 f"library template {record['id']} skipped: {exc}"))
     # One stroke cannot belong to two symbols; overlapping claims need review.
