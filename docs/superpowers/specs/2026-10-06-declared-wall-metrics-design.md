@@ -1,7 +1,7 @@
 # Declared wall metrics: known thicknesses and a true wall length
 
 Date: 2026-10-06
-Status: design, pending implementation
+Status: §1, §2 and §4 implemented 2026-10-09 on branch `feat/declared-thickness` (`--wall-thickness`, `--wall-thickness-exhaustive`, `--wall-thickness-tolerance-in`; typed on the scale screen of the Drawing view; plan `2026-10-09-declared-wall-thickness.md`). The observed-thickness suggestions and the "N runs would be rejected" preview are deferred; so is §6.
 Related: `2026-09-18-geometry-first-wall-candidacy-design.md`, `2026-09-24-symbol-library-design.md`
 
 ## Problem

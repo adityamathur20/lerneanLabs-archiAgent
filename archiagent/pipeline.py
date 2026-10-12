@@ -22,10 +22,13 @@ from archiagent.validate import validate
 
 
 def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
-              measurements=(), review=None, adjudicator=None, symbol_library=()):
+              measurements=(), review=None, adjudicator=None, symbol_library=(),
+              declared_thickness_ft=(), thickness_tolerance_ft=None,
+              thickness_exhaustive=False):
     import math
     from archiagent.classify.layers import candidate_layers
-    from archiagent.geometry.candidacy import reconcile_symbols, select_walls, yields_to_walls
+    from archiagent.geometry.candidacy import (MODE_TOLERANCE_FT, reconcile_symbols, select_walls,
+                                               yields_to_walls)
     from archiagent.recognition import (recognize_symbols, exclude_symbol_geometry,
                                         host_openings, remap_openings)
     from archiagent.geometry.walls import detect_walls_filled_bodies, combine_wall_hypotheses
@@ -112,9 +115,13 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
     pair_layers = candidate_layers(classification, wall_ps.layer_names())
     paired = detect_walls_paired_lines(wall_ps, pair_layers, scale.units_per_foot)
     filled = detect_walls_filled_bodies(wall_ps, pair_layers, scale.units_per_foot)
+    tolerance_ft = MODE_TOLERANCE_FT if thickness_tolerance_ft is None else thickness_tolerance_ft
     walls, candidate_decisions, candidacy_issues = select_walls(
         wall_ps, combine_wall_hypotheses(paired, filled), classification,
-        scale.units_per_foot, adjudicator=adjudicator)
+        scale.units_per_foot, adjudicator=adjudicator,
+        declared_thickness_ft=declared_thickness_ft,
+        thickness_tolerance_ft=tolerance_ft,
+        thickness_exhaustive=thickness_exhaustive)
     if "symbols" in review:
         # Reviewed instance records are frozen decisions: candidacy may still
         # accept their geometry as a wall, but the symbol itself never splits.
@@ -202,7 +209,17 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
     if ps.declared_units_per_foot and not math.isclose(ps.declared_units_per_foot,scale.units_per_foot):
         ingest_issues += (Issue("warn","scale","declared_units_overridden",
                                f"header={ps.declared_units_per_foot} units/ft, using {scale.units_per_foot}; dimension checks determine acceptance"),)
-    return replace(model, issues=validate(model)+ingest_issues+geometry_issues+candidacy_issues+superseded+library_issues)
+    thickness_issues = ()
+    if declared_thickness_ft:
+        from archiagent.geometry.candidacy import thickness_scale_check
+        factor = thickness_scale_check(graph.walls, declared_thickness_ft, tolerance_ft)
+        if factor is not None:
+            thickness_issues = (Issue("warn", "scale", "declared_thickness_scale_mismatch",
+                                      f"observed wall thicknesses fit the declared set only after "
+                                      f"dividing by {factor:g}; the scale this run resolved "
+                                      f"({scale.units_per_foot:g} units per foot) is probably wrong "
+                                      f"by that factor"),)
+    return replace(model, issues=validate(model)+ingest_issues+geometry_issues+candidacy_issues+superseded+library_issues+thickness_issues)
 
 
 def extract_from_primitives(ps: PrimitiveSet, classifier: LayerClassifier,
@@ -226,11 +243,15 @@ def extract_from_primitives(ps: PrimitiveSet, classifier: LayerClassifier,
 def extract_from_dxf(ps: PrimitiveSet, classifier: LayerClassifier, *,
                      units_per_foot: float, wall_height_ft: float = 10.0,
                      region=None, measurements=(), review=None, adjudicator=None,
-                     symbol_library=()) -> BuildingModel:
+                     symbol_library=(), declared_thickness_ft=(),
+                     thickness_tolerance_ft=None,
+                     thickness_exhaustive=False) -> BuildingModel:
     scale = ScaleResult(units_per_foot,"source-units-unverified",(),0.0,0)
     return _assemble(ps,classifier.classify(build_inventory(ps)),scale,wall_height_ft,
                      region=region,measurements=measurements,review=review,adjudicator=adjudicator,
-                     symbol_library=symbol_library)
+                     symbol_library=symbol_library,declared_thickness_ft=declared_thickness_ft,
+                     thickness_tolerance_ft=thickness_tolerance_ft,
+                     thickness_exhaustive=thickness_exhaustive)
 
 
 def extract(pdf_path: str | Path, classifier: LayerClassifier, page: int = 0,
