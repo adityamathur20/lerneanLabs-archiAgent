@@ -20,7 +20,10 @@ from shapely.strtree import STRtree
 from archiagent.classify.shapes import measure, parts_from
 from archiagent.semantic import SymbolInstance
 
-KINDS = {"door","window","column","beam","stair","furniture","electrical","plumbing","vehicle","vegetation"}
+# "annotation" is a mark that is not a physical element (a compass, a north arrow):
+# it is recognised so it is not mistaken for a wall, and never authored into the IFC.
+KINDS = {"door","window","column","beam","stair","furniture","electrical","plumbing","vehicle","vegetation",
+         "annotation"}
 MAX_SEED_PRIMITIVES = 64
 MAX_MATCH_OPERATIONS = 200_000
 

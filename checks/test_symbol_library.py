@@ -136,3 +136,40 @@ class BudgetChecks(unittest.TestCase):
             symbols, issues = match_library_templates(ps, 1, [template()])
         self.assertEqual(symbols, ())
         self.assertEqual([i.code for i in issues], ["library_template_skipped"])
+
+
+# --- what kind of space a symbol belongs in -------------------------------------
+
+class SpaceTypeChecks(unittest.TestCase):
+    def test_a_template_may_say_which_spaces_it_belongs_in_and_how_strongly(self):
+        from archiagent.classify.library_templates import _validated
+        rec = _validated(template(kind="plumbing", space_types=["bathroom", "kitchen"], space_evidence="strong"))
+        self.assertEqual(rec["space_types"], ("bathroom", "kitchen"))
+        self.assertEqual(rec["space_evidence"], "strong")
+
+    def test_without_them_nothing_changes(self):
+        from archiagent.classify.library_templates import _validated
+        rec = _validated(template())
+        self.assertNotIn("space_types", rec)
+
+    def test_an_unknown_space_type_or_evidence_is_refused(self):
+        from archiagent.classify.library_templates import _validated
+        with self.assertRaisesRegex(ValueError, "space type"):
+            _validated(template(space_types=["bathrom"]))
+        with self.assertRaisesRegex(ValueError, "space_evidence"):
+            _validated(template(space_types=["bathroom"], space_evidence="certain"))
+        with self.assertRaisesRegex(ValueError, "space type"):
+            _validated(template(space_types="bathroom"))
+
+    def test_a_matched_symbol_carries_them_as_properties(self):
+        ps = drawing([primitive("one", L_SHAPE)])
+        symbols, _ = match_library_templates(ps, 1, [template(space_types=["bedroom"], space_evidence="weak")])
+        props = dict(symbols[0].properties)
+        self.assertEqual(props["space_types"], "bedroom")
+        self.assertEqual(props["space_evidence"], "weak")
+
+    def test_annotation_is_an_accepted_kind(self):
+        ps = drawing([primitive("one", L_SHAPE)])
+        symbols, issues = match_library_templates(ps, 1, [template(kind="annotation", subtype="compass")])
+        self.assertEqual([s.kind for s in symbols], ["annotation"])
+        self.assertEqual(issues, ())

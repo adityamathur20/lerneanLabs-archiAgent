@@ -29,6 +29,12 @@ from archiagent.semantic import SymbolInstance
 TOLERANCE_FRACTION = 0.03
 MAX_MATCH_OPERATIONS = 200_000
 
+# The kinds of space a library symbol can say it belongs in. A closed list, so a
+# typo is refused at load rather than silently never matching a room.
+SPACE_TYPES = frozenset({"living", "bedroom", "bathroom", "kitchen", "dining", "parking", "balcony",
+                         "terrace", "garden", "staircase", "utility", "store", "corridor", "any"})
+SPACE_EVIDENCE = frozenset({"strong", "weak"})
+
 
 class LibraryBudgetExceeded(ValueError):
     """A template cost more to match than the budget allows. The caller skips that template."""
@@ -137,8 +143,18 @@ def _validated(record):
     mirror = record.get("mirror_allowed", False)
     if not isinstance(mirror, bool):
         raise ValueError(f"library template {record['id']} mirror_allowed must be a boolean")
-    return {**record, "rotations_deg": tuple(sorted({float(a) % 360 for a in angles})),
-            "mirror_allowed": mirror, "size_ft": {"min": float(low), "max": float(high)}}
+    out = {**record, "rotations_deg": tuple(sorted({float(a) % 360 for a in angles})),
+           "mirror_allowed": mirror, "size_ft": {"min": float(low), "max": float(high)}}
+    if "space_types" in record:
+        spaces = record["space_types"]
+        if (not isinstance(spaces, (list, tuple)) or not spaces
+                or any(s not in SPACE_TYPES for s in spaces)):
+            raise ValueError(f"library template {record['id']} has an unknown space type; "
+                             f"use a list from {sorted(SPACE_TYPES)}")
+        out["space_types"] = tuple(spaces)
+    if "space_evidence" in record and record["space_evidence"] not in SPACE_EVIDENCE:
+        raise ValueError(f"library template {record['id']} space_evidence must be 'strong' or 'weak'")
+    return out
 
 
 def _template_parts(record):
@@ -205,7 +221,10 @@ def _symbol(record, parts, scale, mirror, angle):
                           properties=(("library_template_id", record["id"]),
                                       ("library_scale_ft", f"{scale:.6f}"),
                                       ("library_mirrored", str(mirror)),
-                                      ("library_angle_deg", str(angle))))
+                                      ("library_angle_deg", str(angle)),
+                                      *((("space_types", ",".join(record["space_types"])),
+                                         ("space_evidence", record.get("space_evidence", "weak")))
+                                        if record.get("space_types") else ())))
 
 
 def match_library_templates(ps, units_per_foot, templates, *, max_candidates=5000
