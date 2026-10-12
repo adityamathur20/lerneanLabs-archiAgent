@@ -1,7 +1,7 @@
 # Multi-floor runs: detect the floors, confirm them, run each in parallel, build one building
 
 Date: 2026-10-12
-Status: design, awaiting owner review
+Status: design, awaiting owner review. Decisions confirmed by the owner 2026-10-12: confirm-first with a per-floor approve/disapprove list; classify layers once per file; one building IFC plus each floor's IFC; harvesting is a backend action.
 Related: `2026-10-07-staged-pipeline-design.md`, `2026-09-24-symbol-library-design.md`, `plans/2026-10-08-scale-tool-and-symbol-approval.md`
 
 ## 1. What the owner asked for
@@ -62,6 +62,8 @@ The floor job's input is a DXF containing only that floor. Built at prepare/conf
 
 Prepare runs the layer classification (text + vision) once on the whole file and stores `plan.classification.json`. Each floor run receives it with a new flag `--classification-file`, using the existing precomputed-classifier path. LLM cost for classification stays ~41k tokens for the file, not per floor. Wall adjudication is per floor and sums to about the same as one run.
 
+Token counts here are measured on the corpus and vary by drawing (more layers, more vision calls); the point of the design is that classification happens once per file, not once per floor.
+
 Consequences: the layer gate (a wall layer needs 70% confidence) is decided once; if it fails there, **no floor runs**, which is cheaper than N failures.
 
 ## 7. Orchestration (service)
@@ -89,7 +91,7 @@ Limitation, stated up front: today's conversions detect 0-2 closed spaces per dr
 
 | | Today (whole file, one run) | Per floor, classification repeated | Per floor, classified once (this design) |
 |---|---|---|---|
-| LLM tokens (3 floors) | ~55k | ~137k | ~55k |
+| LLM tokens (3 floors), corpus-typical | ~55k | ~137k | ~55k (classification once) |
 | Wall-clock | one run, 7-30 min (LLM latency) | about one run if parallel | about one run if parallel |
 
 Parallel runs are faster than the same floors run one after another, not faster than today's single run, because a run is latency-bound. The gain is correctness (separate storeys), not speed.
@@ -97,6 +99,10 @@ Parallel runs are faster than the same floors run one after another, not faster 
 ## 11. Acceptance on the corpus
 
 Detection, run on the five multi-plan drawings, must find: Baglow 3 floors (stacked), MB Panwar 2, SANJANA Giriraj 4, SANJANA Suresh 2, RAJEEV (ground + terrace), each with the right name and box; Aiims Road must report **no floors** and list its elevations as not-a-floor. A floor DXF must contain no entity from another floor's box. Building IFC must have one storey per approved floor at the confirmed elevations.
+
+## 11a. Room detection is a dependency
+
+Per-floor room typing needs closed rooms. Measured 2026-10-12 on two corpus drawings: about half of all wall endpoints touch nothing (SANJANA Suresh 43 of 98, Baglow 192 of 360), and the pipeline finds 1 space in each. Bridging gaps up to 8 ft closes 15 and 40 rooms respectively; up to 2 ft closes almost none. The gaps are door-sized, not tolerance noise. Cutting each floor out first is a precondition (a three-plan sheet cannot close rooms), and closing doorway gaps from recognised door and window symbols is the follow-on. See the owner's question of 2026-10-12.
 
 ## 12. Not in this design
 
