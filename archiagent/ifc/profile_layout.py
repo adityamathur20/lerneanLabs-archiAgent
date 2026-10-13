@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from shapely.geometry import LineString, Polygon
 
+from archiagent.geometry.profile_fit import TOUCH_FT, overlapping_profiles
+
 PROFILE_TOL_FT = 1e-7
 
 
@@ -20,10 +22,12 @@ def wall_layout(model):
     mapping = {}
     for index, wall in enumerate(model.walls):
         footprint = LineString((wall.start, wall.end)).buffer(wall.thickness_ft/2, cap_style=2)
-        matches = [i for i, poly in enumerate(polygons) if poly.buffer(PROFILE_TOL_FT).covers(footprint)]
+        matches = [i for i, poly in enumerate(polygons) if poly.buffer(TOUCH_FT).covers(footprint)]
         if len(matches) == 1:
             mapping[index] = matches[0]
-        elif any(footprint.intersection(poly).area > PROFILE_TOL_FT**2 for poly in polygons):
+        elif overlapping_profiles(footprint, polygons):
+            # Resting on a profile's edge is not overlapping it; the pipeline's
+            # fit_walls_to_profiles has already split every wall that really does.
             raise ValueError(f"wall {index} partially overlaps accepted wall profiles; review host mapping")
     return profiles, polygons, mapping
 
