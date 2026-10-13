@@ -257,7 +257,7 @@ def thickness_scale_check(walls, declared_ft, tolerance_ft):
 
     def share(factor):
         matched = sum(w.length_ft for w in walls
-                      if any(abs(w.thickness_ft / factor - d) <= tolerance_ft for d in declared_ft))
+                      if any(_within(w.thickness_ft / factor, d, tolerance_ft) for d in declared_ft))
         total = sum(w.length_ft for w in walls)
         return matched / total if total else 0.0
 
@@ -267,10 +267,19 @@ def thickness_scale_check(walls, declared_ft, tolerance_ft):
     return best if share(best) >= SCALE_CHECK_SHARE else None
 
 
+def _within(observed_ft: float, declared_ft: float, tolerance_ft: float) -> bool:
+    """Inclusive, with a picometre of slack: 4.5 in is within 0.5 in of 5 in.
+
+    Plain `<=` put exactly-at-the-boundary values 2e-18 ft outside because
+    0.5/12 and 5/12 - 4.5/12 round differently.
+    """
+    return abs(observed_ft - declared_ft) <= tolerance_ft + 1e-9
+
+
 def _thickness(wall: WallSeg, modes: tuple[float, ...], tolerance_ft: float) -> float:
     if not modes:
         return 0.0
-    return 1.0 if any(abs(wall.thickness_ft - m) <= tolerance_ft for m in modes) else -0.5
+    return 1.0 if any(_within(wall.thickness_ft, m, tolerance_ft) for m in modes) else -0.5
 
 
 def score_candidates(walls, ctx: Context) -> tuple[ScoredCandidate, ...]:

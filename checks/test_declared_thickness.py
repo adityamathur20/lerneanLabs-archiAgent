@@ -179,3 +179,20 @@ def test_the_pipeline_is_silent_when_the_declared_set_fits():
 
 def test_the_pipeline_is_silent_without_a_declared_set():
     assert "declared_thickness_scale_mismatch" not in issue_codes(run_house())
+
+
+def test_a_wall_exactly_at_the_tolerance_matches_the_declared_thickness():
+    # 4.5 in is a "5 in" wall to anyone who types 5. 0.5 in apart is exactly the
+    # default tolerance, and floating point put it 2e-18 outside (RAJEEV 2026-10-13:
+    # 133 of 210 wall segments, and with "only these" ticked all of them, were rejected).
+    four_and_a_half = signals_for([wall((0, 0), (10, 0), 4.5 / 12)],
+                                  declared_thickness_ft=(5 / 12,), thickness_tolerance_ft=0.5 / 12)
+    assert four_and_a_half[4.5 / 12] == 1.0
+    just_outside = signals_for([wall((0, 0), (10, 0), 4.49 / 12)],
+                               declared_thickness_ft=(5 / 12,), thickness_tolerance_ft=0.5 / 12)
+    assert just_outside[4.49 / 12] == -0.5
+
+
+def test_the_boundary_is_inclusive_in_the_scale_check_too():
+    walls = [wall((0, 0), (10, 0), 4.5 / 12), wall((0, 5), (10, 5), 9 / 12)]
+    assert thickness_scale_check(walls, (5 / 12, 9 / 12), 0.5 / 12) is None

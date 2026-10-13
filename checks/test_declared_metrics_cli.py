@@ -16,7 +16,7 @@ def test_no_flag_means_nothing_declared():
     args = parse()
     assert _declared_thickness_ft(args) == ()
     assert args.wall_thickness_exhaustive is False
-    assert args.wall_thickness_tolerance_in == 0.5
+    assert args.wall_thickness_tolerance_in == 0.75
 
 
 def test_inches_become_feet_exactly_once_sorted_and_deduplicated():

@@ -215,7 +215,7 @@ def _check_joins(f, models, error):
             # A trimmed outline is still a rectangle unless the joint is angled.
             # The same predicate authoring uses, so the two cannot disagree.
             shape = shapes[index]
-            if (is_rectangular(shape.area, shape.minimum_rotated_rectangle.area)
+            if (is_rectangular(shape.area, shape.minimum_rotated_rectangle.area, shape.length)
                     and not body.Items[0].SweptArea.is_a("IfcRectangleProfileDef")):
                 error("wall_profile_not_parametric", label,
                       "a rectangular run must use IfcRectangleProfileDef")

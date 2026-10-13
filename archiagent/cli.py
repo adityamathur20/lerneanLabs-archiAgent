@@ -167,9 +167,9 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--wall-thickness-exhaustive", action="store_true",
                    help="the --wall-thickness set is complete: a candidate wall matching none "
                         "of it is rejected")
-    p.add_argument("--wall-thickness-tolerance-in", type=float, default=0.5, metavar="IN",
+    p.add_argument("--wall-thickness-tolerance-in", type=float, default=0.75, metavar="IN",
                    help="how far a wall may differ from a declared thickness and still match "
-                        "(default 0.5)")
+                        "(default 0.75)")
     p.add_argument("--room-gap-ft", type=float, default=8.0, metavar="FT",
                    help="treat a gap of up to this many feet between wall ends as closed when "
                         "finding rooms (a door or window, or a wall that stops short). Walls are "
