@@ -33,11 +33,13 @@ Floor labels in the owner's drawings: text under each plan ("GROUND FLOOR PLAN",
 
 ## 3. User flow
 
-1. Upload; prepare as today (convert, scale evidence). Prepare now also **detects floors** and **classifies layers once**.
-2. The Drawing view shows a **Floors** panel: one row per detected floor with its name, a highlighted box on the drawing, an elevation field, and **Approve / Disapprove**. Names and elevations are editable. A floor can also be added by drawing a box (v2).
-3. The Convert button stays disabled until **every** detected floor is decided and at least one is approved. The scale and wall-thickness sections apply to all floors.
-4. Convert creates one **building job** and one **floor job per approved floor**; floors run in parallel.
-5. The building page shows each floor's status and, when all have finished, the building IFC and the per-floor IFCs and reports.
+1. Upload; prepare as today (convert, scale evidence, and the level marks the drawing writes).
+2. In the Drawing view the user sets the **scale**, optional **wall thicknesses** and the **wall height** (slider, 1 to 50 ft, default 10, or the spacing the level marks agree on), then presses Convert.
+3. **The service then detects floors** (this needs the scale: plan sizes are judged in feet, which is why detection moved from prepare to after the scale is chosen) and classifies layers once. One plan, or none recognised: the run goes on exactly as before.
+4. Two or more plans: the job stops at `awaiting_floors` and the Drawing view shows a **Floors** panel: one row per floor with its name, an elevation field and **Approve / Disapprove**, and a Show button that zooms to the plan. Names and elevations are editable.
+5. The panel's Convert stays closed until **every** detected floor is decided and at least one is approved.
+6. Convert creates one **building job** and one **floor job per approved floor**; floors run in parallel.
+7. The building page shows each floor's progress and, when all have ended, the building IFC; each floor's IFC and report stay downloadable.
 
 A file with no detected floor labels behaves exactly as today (one region, the whole drawing). Elevations and sections (`ELEVATION`, `SECTION`, `FFL` markers) are detected and listed as "not a floor" so they can be left out.
 
@@ -122,9 +124,11 @@ Authoring furniture/plumbing into the IFC; drawing a floor box by hand (v2); cro
 ## 13. Decisions I made that you can overrule
 
 1. Default elevation when the file has no level marker: ground 0, then + wall height, marked assumed.
-2. Entities spanning floors are dropped from every floor and reported.
-3. A failed floor does not stop the others; the building is `partial`.
-4. Worker count starts at 3.
+2. Floors are detected after the scale is chosen, not at prepare, because plan sizes are judged in feet.
+3. Entities spanning floors are dropped from every floor and reported.
+4. A failed floor does not stop the others; the building is `partial`.
+5. Worker count starts at 3, and the per-tenant concurrent-run cap follows it.
+6. A drawing that calls itself a typical floor (`TYPICAL FLOOR PLAN`, `1st FLOOR TO 5th FLOOR PLAN`) is never split: one plan stands for many floors, which is a different feature.
 
 ## 14. Changes from the owner's review, 2026-10-13
 
