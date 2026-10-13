@@ -178,26 +178,26 @@ class SpaceTypeChecks(unittest.TestCase):
 # --- an over-budget template is matched at fewer orientations before it is skipped ---
 
 class FitOrientationChecks(unittest.TestCase):
-    ALL = (0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0)       # the supported set
+    ALL = (0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0)   # the supported set
 
     def fit(self, anchors, angles=None, mirror=True, budget=5000):
         from archiagent.classify.library_templates import fit_orientations
         return fit_orientations(tuple(angles if angles is not None else self.ALL), mirror, anchors, budget)
 
     def test_what_fits_is_left_alone(self):
-        angles, mirrors = self.fit(anchors=100)            # 100 x 7 x 2 = 1400
+        angles, mirrors = self.fit(anchors=100)            # 100 x 8 x 2 = 1600
         self.assertEqual(angles, self.ALL)
         self.assertEqual(mirrors, (False, True))
 
     def test_the_most_orientations_that_fit_are_used(self):
         # 500 x 14 = 7000 > 5000. Five axis and diagonal angles with mirror is 10 trials a spot
-        # (5000); all seven angles without mirror is 7 (3500). The wider coverage wins.
+        # (5000); all eight angles without mirror is 8 (4000). Mirroring a smaller set wins on trials used.
         angles, mirrors = self.fit(anchors=500)
         self.assertEqual(angles, (0.0, 45.0, 90.0, 180.0, 270.0))
         self.assertEqual(mirrors, (False, True))
 
     def test_then_the_five_axis_and_diagonal_angles(self):
-        angles, mirrors = self.fit(anchors=900)             # 900 x 7 = 6300; 5 angles + mirror 9000; 5 x 900 = 4500
+        angles, mirrors = self.fit(anchors=900)             # 900 x 8 = 7200; 5 angles + mirror 9000; 5 x 900 = 4500
         self.assertEqual(angles, (0.0, 45.0, 90.0, 180.0, 270.0))
         self.assertEqual(mirrors, (False,))
 
@@ -219,6 +219,10 @@ class FitOrientationChecks(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "rotation"):
             _validated(template(rotations_deg=[0, 22.5]))
         self.assertEqual(_validated(template(rotations_deg=[0, 45, 135]))["rotations_deg"], (0.0, 45.0, 135.0))
+
+    def test_315_degrees_is_supported(self):
+        from archiagent.classify.library_templates import _validated
+        self.assertEqual(_validated(template(rotations_deg=[315, 0, -45]))["rotations_deg"], (0.0, 315.0))
 
     def test_the_run_reduces_instead_of_skipping_and_says_so(self):
         ps = drawing([primitive("l1", L_SHAPE), primitive("l2", transform(L_SHAPE, 0, (30, 0), 1)),

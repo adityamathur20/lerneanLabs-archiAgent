@@ -9,6 +9,7 @@ from archiagent.classify.inventory import LayerStats, build_inventory
 from archiagent.classify.layers import (WALL_CONFIDENCE_FLOOR, WALL_ROLES,
                                         LayerClassifier, layers_for_roles)
 from archiagent.geometry.junctions import resolve_junctions
+from archiagent.geometry.room_gaps import MAX_GAP_FT, find_room_gaps
 from archiagent.geometry.spaces import (detect_spaces, space_boundary_graph,
                                         room_graph_with_openings)
 from archiagent.geometry.walls import detect_walls_paired_lines
@@ -24,7 +25,7 @@ from archiagent.validate import validate
 def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
               measurements=(), review=None, adjudicator=None, symbol_library=(),
               declared_thickness_ft=(), thickness_tolerance_ft=None,
-              thickness_exhaustive=False):
+              thickness_exhaustive=False, room_gap_ft=MAX_GAP_FT):
     import math
     from archiagent.classify.layers import candidate_layers
     from archiagent.geometry.candidacy import (MODE_TOLERANCE_FT, reconcile_symbols, select_walls,
@@ -150,7 +151,8 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
                                       "provisional head/sill; verify opening schedule"))
     voids = tuple(tuple(tuple(p) for p in ring) for ring in review.get("voids", ()))
     boundary_graph = space_boundary_graph(graph.walls)
-    spaces = detect_spaces(room_graph_with_openings(graph.walls, openings),
+    room_gaps = find_room_gaps(graph.walls, symbols, room_gap_ft)
+    spaces = detect_spaces(room_graph_with_openings(graph.walls, openings, gaps=room_gaps),
                            clear_boundary=True, voids=voids)
     footprints = detect_footprints(boundary_graph, voids=voids)
     footprint_verified = False
@@ -199,7 +201,7 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
                           endpoint_adjustments=graph.adjustments,
                           wall_profiles=wall_profiles,
                           repair_snap_in=repair_snap_in, repair_extend_in=repair_extend_in,
-                          wall_candidates=candidate_decisions)
+                          wall_candidates=candidate_decisions, room_gaps=room_gaps)
     ingest_issues = tuple(Issue("warn", w.source_id, w.code, w.message)
                           for w in (*ps.warnings, *profile_warnings))
     geometry_issues = ()
@@ -219,7 +221,15 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
                                       f"dividing by {factor:g}; the scale this run resolved "
                                       f"({scale.units_per_foot:g} units per foot) is probably wrong "
                                       f"by that factor"),)
-    return replace(model, issues=validate(model)+ingest_issues+geometry_issues+candidacy_issues+superseded+library_issues+thickness_issues)
+    room_issues = ()
+    if room_gaps:
+        from collections import Counter
+        kinds = Counter(g.kind for g in room_gaps)
+        parts = ", ".join(f"{kinds[k]} {k}" for k in ("door-window", "collinear", "corner", "stops-short") if kinds[k])
+        room_issues = (Issue("info", "spaces", "room_gaps_assumed",
+                             f"{len(room_gaps)} gap(s) of up to {room_gap_ft:g} ft between wall ends were "
+                             f"treated as closed to find rooms ({parts}); no wall was changed"),)
+    return replace(model, issues=validate(model)+ingest_issues+geometry_issues+candidacy_issues+superseded+library_issues+thickness_issues+room_issues)
 
 
 def extract_from_primitives(ps: PrimitiveSet, classifier: LayerClassifier,
@@ -245,13 +255,15 @@ def extract_from_dxf(ps: PrimitiveSet, classifier: LayerClassifier, *,
                      region=None, measurements=(), review=None, adjudicator=None,
                      symbol_library=(), declared_thickness_ft=(),
                      thickness_tolerance_ft=None,
-                     thickness_exhaustive=False) -> BuildingModel:
+                     thickness_exhaustive=False,
+                     room_gap_ft=MAX_GAP_FT) -> BuildingModel:
     scale = ScaleResult(units_per_foot,"source-units-unverified",(),0.0,0)
     return _assemble(ps,classifier.classify(build_inventory(ps)),scale,wall_height_ft,
                      region=region,measurements=measurements,review=review,adjudicator=adjudicator,
                      symbol_library=symbol_library,declared_thickness_ft=declared_thickness_ft,
                      thickness_tolerance_ft=thickness_tolerance_ft,
-                     thickness_exhaustive=thickness_exhaustive)
+                     thickness_exhaustive=thickness_exhaustive,
+                     room_gap_ft=room_gap_ft)
 
 
 def extract(pdf_path: str | Path, classifier: LayerClassifier, page: int = 0,

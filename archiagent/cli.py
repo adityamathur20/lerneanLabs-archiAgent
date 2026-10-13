@@ -170,6 +170,10 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--wall-thickness-tolerance-in", type=float, default=0.5, metavar="IN",
                    help="how far a wall may differ from a declared thickness and still match "
                         "(default 0.5)")
+    p.add_argument("--room-gap-ft", type=float, default=8.0, metavar="FT",
+                   help="treat a gap of up to this many feet between wall ends as closed when "
+                        "finding rooms (a door or window, or a wall that stops short). Walls are "
+                        "never changed and each closure is reported. 0 turns it off (default 8)")
     p.add_argument("--rules", action="store_true", help="offline layer hints; no provider call")
     p.add_argument("--region", nargs=4, type=float, metavar=("XMIN","YMIN","XMAX","YMAX"), help="one source-coordinate plan window")
     p.add_argument("--regions-file", help="reviewed JSON regions: kind='plan', explicit elevations, optional units_per_foot per region")
@@ -408,6 +412,8 @@ def _validate_options(args) -> None:
     if args.wall_thickness_exhaustive and not args.wall_thickness:
         raise ValueError("--wall-thickness-exhaustive needs --wall-thickness: "
                          "it says the declared set is complete")
+    if not math.isfinite(args.room_gap_ft) or not 0 <= args.room_gap_ft <= 40:
+        raise ValueError("--room-gap-ft must be between 0 and 40 feet")
     tolerance = args.wall_thickness_tolerance_in
     if not math.isfinite(tolerance) or not 0 < tolerance <= 6:
         raise ValueError("--wall-thickness-tolerance-in must be above 0 and at most 6 inches")
@@ -806,7 +812,7 @@ def _main(argv: list[str] | None = None) -> int:
         incompatible = {"--height", "--walls", "--rules", "--provider", "--model",
                         "--scale-from-wall", "--trust-extracted-scale",
                         "--wall-thickness", "--wall-thickness-exhaustive",
-                        "--wall-thickness-tolerance-in",
+                        "--wall-thickness-tolerance-in", "--room-gap-ft",
                         "--region", "--regions-file", "--storey-name", "--elevation", "--measurements",
                         "--review-file", "--reference-file", "--ocr", "--workbench", "--page"}
         specified = {arg.split("=", 1)[0] for arg in argv}
@@ -1053,7 +1059,8 @@ def _main(argv: list[str] | None = None) -> int:
                                          declared_thickness_ft=_declared_thickness_ft(args),
                                          thickness_tolerance_ft=(args.wall_thickness_tolerance_in / 12
                                                                  if args.wall_thickness else None),
-                                         thickness_exhaustive=args.wall_thickness_exhaustive,**kwargs)
+                                         thickness_exhaustive=args.wall_thickness_exhaustive,
+                                         room_gap_ft=args.room_gap_ft,**kwargs)
             else:
                 model = extract_from_primitives(source,selected_classifier,units_per_foot=selected_scale,stats=region_stats,**kwargs)
             if region is None:

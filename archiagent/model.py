@@ -10,6 +10,7 @@ from archiagent.geometry.junctions import Junction, EndpointAdjustment
 from archiagent.geometry.spaces import Space
 from archiagent.geometry.walls import WallSeg
 from archiagent.geometry.profiles import WallProfile
+from archiagent.geometry.room_gaps import RoomGap
 from archiagent.primitives import Pt
 from archiagent.scale.resolve import ScaleResult
 from archiagent.semantic import Assumption, DimensionCheck, Opening, SymbolInstance
@@ -54,6 +55,7 @@ class BuildingModel:
     source_origin: Pt = (0.0, 0.0)
     wall_profiles: tuple[WallProfile, ...] = ()
     wall_candidates: tuple[CandidateDecision, ...] = ()
+    room_gaps: tuple[RoomGap, ...] = ()
 
     def envelope(self) -> tuple[float, float, float, float]:
         xs = [c for w in self.walls for c in (w.start[0], w.end[0])]
