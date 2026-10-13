@@ -531,7 +531,7 @@ def _assemble_building(args) -> int:
     return EXIT_OK
 
 
-def asdict_report(result):
+def _report_dict(result):
     from dataclasses import asdict
     return asdict(result)
 
@@ -1080,7 +1080,7 @@ def _main(argv: list[str] | None = None) -> int:
                 if record.get("approved", True) is False:
                     continue
                 result = cut_floor(input_path, floor, everything, out_dir / f"{floor.id}.dxf")
-                report.append(asdict_report(result))
+                report.append(_report_dict(result))
             (out_dir / "floors.cut.json").write_text(json.dumps({"floors": report}, indent=2))
             print(f"{len(report)} floor drawing(s) -> {out_dir}")
             return EXIT_OK

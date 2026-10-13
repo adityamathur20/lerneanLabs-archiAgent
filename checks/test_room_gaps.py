@@ -150,9 +150,9 @@ def test_a_limit_that_is_negative_not_finite_or_beyond_forty_feet_is_refused(bad
         _validate_options(parse("--room-gap-ft", bad))
 
 
-def test_a_replay_cannot_change_it():
+def test_a_replay_cannot_change_it(tmp_path):
     from archiagent.cli import main
-    assert main(["--replay-manifest", "m.json", "--dxfFilePath", "p.dxf", "--outputDir", "o",
+    assert main(["--replay-manifest", "m.json", "--dxfFilePath", "p.dxf", "--outputDir", str(tmp_path / "o"),
                  "--room-gap-ft", "4"]) != 0
 
 

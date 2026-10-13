@@ -75,6 +75,7 @@ def find_room_gaps(walls, symbols=(), max_gap_ft: float = MAX_GAP_FT,
     cone = math.cos(math.radians(CONE_DEGREES))
     parallel = math.cos(math.radians(PARALLEL_DEGREES))
     drawn = [(s, _symbol_geometry(s)) for s in symbols if s.kind in ("door", "window")]
+    drawn_tree = STRtree([g for _, g in drawn]) if drawn else None
     found: dict[tuple, RoomGap] = {}
 
     for i, wall in enumerate(walls):
@@ -115,10 +116,10 @@ def find_room_gaps(walls, symbols=(), max_gap_ft: float = MAX_GAP_FT,
                 kind = "stops-short"
             ids = set(wall.source_ids) | set(other.source_ids)
             edge = LineString((end, target)).buffer(SYMBOL_REACH_FT)
-            for symbol, geometry in drawn:
-                if edge.intersects(geometry):
+            if drawn_tree is not None:
+                for k in drawn_tree.query(edge, predicate="intersects"):
                     kind = "door-window"
-                    ids.add(symbol.id)
+                    ids.add(drawn[int(k)][0].id)
             key = tuple(sorted((tuple(round(c, 6) for c in end), tuple(round(c, 6) for c in target))))
             previous = found.get(key)
             if previous is None or KINDS.index(kind) < KINDS.index(previous.kind):
