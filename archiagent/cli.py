@@ -178,6 +178,18 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--region", nargs=4, type=float, metavar=("XMIN","YMIN","XMAX","YMAX"), help="one source-coordinate plan window")
     p.add_argument("--regions-file", help="reviewed JSON regions: kind='plan', explicit elevations, optional units_per_foot per region")
     p.add_argument("--list-regions", action="store_true", help="print spatial region proposals; no floor identity is inferred")
+    p.add_argument("--detect-floors", action="store_true",
+                   help="print the floors this drawing appears to hold (plan clusters named by their "
+                        "captions) as JSON; needs a scale; writes nothing else")
+    p.add_argument("--assemble-building", metavar="FLOORS_JSON",
+                   help="assemble the floors that have run (see --floors-dir) into one building IFC, "
+                        "one storey per floor at the elevations in this file; needs no drawing")
+    p.add_argument("--floors-dir", metavar="DIR",
+                   help="with --assemble-building: DIR/<id>.dxf and DIR/<id>/<id>.interpretation.json "
+                        "for each floor that ran")
+    p.add_argument("--cut-floors", metavar="FLOORS_JSON",
+                   help="write floor-<id>.dxf into --outputDir for each floor in this file (the "
+                        "--detect-floors output, optionally edited) that is not marked approved=false")
     p.add_argument("--storey-name", default="Unassigned plan")
     p.add_argument("--elevation", type=float, default=None, help="storey elevation in feet; otherwise explicitly assumed")
     p.add_argument("--measurements", help="reviewed source endpoint dimensions JSON")
@@ -207,6 +219,11 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--print-interpretation-prompt", action="store_true", help="print the versioned interpretation system prompt and exit; no input needed")
     p.add_argument("--inspect", action="store_true",
                    help="print the layer inventory and exit")
+    p.add_argument("--classification-file", metavar="PATH",
+                   help="use the layer classification in this JSON (from --classification-out) instead "
+                        "of asking a model: one classification can serve every floor of a file")
+    p.add_argument("--classification-out", metavar="PATH",
+                   help="with --classify-only, also write the classification as JSON to PATH")
     p.add_argument("--classify-only", action="store_true",
                    help="classify, print the roles, and exit")
     p.add_argument("--no-cache", action="store_true",
@@ -258,11 +275,21 @@ def _print_issues(issues) -> None:
             print(f"  [{i.code}] {i.entity}: {i.msg}", file=sys.stderr)
 
 
+def _classification_from_file(path) -> LayerClassifier:
+    from archiagent.classify.cache import FileClassifier, decode_classification
+    try:
+        return FileClassifier(decode_classification(json.loads(Path(path).read_text(encoding="utf-8"))))
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError(f"--classification-file {path}: {exc}") from exc
+
+
 def _classifier(args) -> LayerClassifier:
     """Manual map, or the LLM behind the cache.
 
     Raises LLMUnavailable, which main() maps to EXIT_LLM.
     """
+    if args.classification_file:
+        return _classification_from_file(args.classification_file)
     if args.rules and not args.walls:
         return RuleClassifier()
     if args.walls:
@@ -320,6 +347,8 @@ def _dxf_classifier(args, dxf_path: str, on_issue=None) -> LayerClassifier:
     reach the caller instead of being silently discarded.
     Raises LLMUnavailable, which main() maps to EXIT_LLM.
     """
+    if args.classification_file:
+        return _classification_from_file(args.classification_file)
     if args.rules and not args.walls:
         return RuleClassifier()
     if args.walls:
@@ -431,6 +460,80 @@ def _validate_options(args) -> None:
         raise ValueError("--freeze-only cannot be combined with replay or Blender export")
     if (args.freeze_only or args.replay_manifest or args.blender_package) and (args.inspect or args.classify_only or args.list_regions):
         raise ValueError("interpretation/export flags cannot be combined with inspection-only modes")
+    if args.classification_file and (args.rules or args.walls):
+        raise ValueError("--classification-file supplies the classification; it cannot be "
+                         "combined with --rules or --walls")
+    if args.assemble_building:
+        if not (args.floors_dir and args.outputDir):
+            raise ValueError("--assemble-building needs --floors-dir and --outputDir")
+        if args.replay_manifest or args.freeze_only or args.blender_package or args.detect_floors or args.cut_floors:
+            raise ValueError("--assemble-building cannot be combined with replay, export or the other floor modes")
+    if args.classification_out and not args.classify_only:
+        raise ValueError("--classification-out needs --classify-only")
+    if args.detect_floors or args.cut_floors:
+        if args.pdfFilePath:
+            raise ValueError("--detect-floors and --cut-floors read a DXF or DWG, not a PDF")
+        if args.replay_manifest or args.freeze_only or args.blender_package:
+            raise ValueError("--detect-floors and --cut-floors cannot be combined with replay or export")
+        if args.detect_floors and args.cut_floors:
+            raise ValueError("use --detect-floors or --cut-floors, not both")
+        if args.cut_floors and not args.outputDir:
+            raise ValueError("--cut-floors needs --outputDir")
+
+
+def _floor_report(record, model):
+    from collections import Counter
+    symbols = Counter(s.kind for s in model.symbols)
+    issues = Counter(i.severity for i in model.issues)
+    return {"id": record["id"], "name": record["name"], "elevation_ft": record["elevation_ft"],
+            "elevation_source": record["elevation_source"], "wall_height_ft": model.wall_height_ft,
+            "walls": len(model.walls), "openings": len(model.openings),
+            "symbols_by_kind": dict(sorted(symbols.items())), "spaces": len(model.spaces),
+            "closed_gaps": len(model.room_gaps),
+            "issues": {k: issues.get(k, 0) for k in ("error", "warn", "info")}}
+
+
+def _assemble_building(args) -> int:
+    """One IFC with a storey per floor that ran; a floor that did not run is named, not guessed."""
+    from dataclasses import replace
+    from archiagent.interpretation import read_manifest
+    listed = json.loads(Path(args.assemble_building).read_text())
+    records = listed["floors"] if isinstance(listed, dict) else listed
+    floors_dir, out_dir = Path(args.floors_dir), Path(args.outputDir)
+    models, reports, missing = [], [], []
+    for record in records:
+        if record.get("approved", True) is False:
+            continue
+        fid = record["id"]
+        drawing, manifest = floors_dir / f"{fid}.dxf", floors_dir / fid / f"{fid}.interpretation.json"
+        if not (drawing.is_file() and manifest.is_file()):
+            missing.append(fid)
+            continue
+        found, _ = read_manifest(manifest, drawing)
+        model = replace(found[0], region_id=fid, storey_name=record["name"],
+                        elevation_ft=float(record["elevation_ft"]))
+        models.append(model)
+        reports.append(_floor_report(record, model))
+    if not models:
+        raise ValueError("no floor has finished, so there is nothing to assemble"
+                         + (f" (missing: {', '.join(missing)})" if missing else ""))
+    heights = {m.wall_height_ft for m in models}
+    if len(heights) > 1:
+        raise ValueError(f"floors were built with different wall heights {sorted(heights)}; "
+                         "one height applies to every floor")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ifc = author_building(models, out_dir / "building.ifc")
+    (out_dir / "building.report.json").write_text(json.dumps({
+        "building": {"ifc": ifc.name, "floors_assembled": len(models), "floors_missing": missing,
+                     "wall_height_ft": heights.pop()},
+        "floors": reports}, indent=2), encoding="utf-8")
+    print(f"building: {len(models)} floor(s) -> {ifc}" + (f"; not run: {', '.join(missing)}" if missing else ""))
+    return EXIT_OK
+
+
+def asdict_report(result):
+    from dataclasses import asdict
+    return asdict(result)
 
 
 def _wall_length_measurements(args) -> tuple:
@@ -813,12 +916,20 @@ def _main(argv: list[str] | None = None) -> int:
                         "--scale-from-wall", "--trust-extracted-scale",
                         "--wall-thickness", "--wall-thickness-exhaustive",
                         "--wall-thickness-tolerance-in", "--room-gap-ft",
+                        "--detect-floors", "--cut-floors",
                         "--region", "--regions-file", "--storey-name", "--elevation", "--measurements",
                         "--review-file", "--reference-file", "--ocr", "--workbench", "--page"}
         specified = {arg.split("=", 1)[0] for arg in argv}
         if conflicts := sorted(specified & incompatible):
             print(f"error: replay cannot reinterpret frozen decisions with {', '.join(conflicts)}", file=sys.stderr)
             return EXIT_USAGE
+
+    if args.assemble_building:
+        try:
+            return _assemble_building(args)
+        except (ValueError, OSError, RuntimeError) as exc:
+            print(f"error: cannot assemble the building: {exc}", file=sys.stderr)
+            return EXIT_PIPELINE
 
     # Exactly one of --pdfFilePath / --dxfFilePath. Both are ordinary named
     # flags, so there is no positional-matching ambiguity for argparse to
@@ -837,7 +948,8 @@ def _main(argv: list[str] | None = None) -> int:
     is_dxf = bool(args.dxfFilePath or args.dwgFilePath)
     input_path = args.dwgFilePath or args.dxfFilePath or args.pdfFilePath
 
-    authoring = not (args.inspect or args.classify_only or args.list_regions)
+    floors_mode = bool(args.detect_floors or args.cut_floors)
+    authoring = not (args.inspect or args.classify_only or args.list_regions or floors_mode)
 
     if args.prepare and not is_dxf:
         print("error: --prepare reads a DXF or DWG; a PDF has no scale evidence to prepare",
@@ -904,7 +1016,7 @@ def _main(argv: list[str] | None = None) -> int:
     classifier_issues: list[Issue] = []
     classifier: LayerClassifier | None = None
     adjudicator = None
-    if not (args.inspect or args.list_regions or args.prepare):
+    if not (args.inspect or args.list_regions or args.prepare or floors_mode):
         try:
             classifier = (_dxf_classifier(args, input_path,
                                           on_issue=classifier_issues.append)
@@ -937,6 +1049,33 @@ def _main(argv: list[str] | None = None) -> int:
                                                 units_per_foot if is_dxf else None)
             proposals = propose_regions(ps, region_scale)
             print(json.dumps([asdict(r) for r in proposals], indent=2))
+            return EXIT_OK
+
+        if args.detect_floors:
+            from dataclasses import asdict
+            from archiagent.floors import detect_floors
+            floor_scale, _, _ = _resolve_scale(args, ps, is_dxf, None, units_per_foot)
+            found = detect_floors(ps, floor_scale, wall_height_ft=args.height)
+            print(json.dumps({"units_per_foot": floor_scale, "wall_height_ft": args.height,
+                              "floors": [asdict(f) for f in found]}, indent=2))
+            return EXIT_OK
+
+        if args.cut_floors:
+            from archiagent.floor_cut import cut_floor
+            from archiagent.floors import Floor
+            listed = json.loads(Path(args.cut_floors).read_text())
+            records = listed["floors"] if isinstance(listed, dict) else listed
+            everything = tuple(Floor(r["id"], r["name"], tuple(r["bounds"]), r["elevation_ft"],
+                                     r["elevation_source"]) for r in records)
+            out_dir = Path(args.outputDir)
+            report = []
+            for record, floor in zip(records, everything):
+                if record.get("approved", True) is False:
+                    continue
+                result = cut_floor(input_path, floor, everything, out_dir / f"{floor.id}.dxf")
+                report.append(asdict_report(result))
+            (out_dir / "floors.cut.json").write_text(json.dumps({"floors": report}, indent=2))
+            print(f"{len(report)} floor drawing(s) -> {out_dir}")
             return EXIT_OK
 
         if args.harvest_symbols:
@@ -991,7 +1130,12 @@ def _main(argv: list[str] | None = None) -> int:
                 return EXIT_USAGE
 
         if args.classify_only:
-            _print_decisions(classifier.classify(stats))
+            decisions = classifier.classify(stats)
+            _print_decisions(decisions)
+            if args.classification_out:
+                from archiagent.classify.cache import encode_classification
+                Path(args.classification_out).write_text(
+                    json.dumps(encode_classification(decisions), indent=2), encoding="utf-8")
             if args.verbose and classifier_issues:
                 _print_issues(tuple(classifier_issues))
             return EXIT_OK

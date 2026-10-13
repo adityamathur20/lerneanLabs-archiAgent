@@ -112,17 +112,48 @@ def _checked_source(value: object) -> str:
     return str(value)
 
 
+def encode_classification(decisions: Classification) -> list[dict]:
+    return [{"layer": d.layer, "role": d.role.value, "confidence": d.confidence,
+             "reason": d.reason, "source": d.source} for d in decisions]
+
+
+def decode_classification(raw: object) -> Classification:
+    """The decisions in `raw`; raises on anything that is not exactly that.
+
+    Shared by the cache and by --classification-file, so a hand-edited file is
+    judged by the same rules as a hand-edited cache entry.
+    """
+    if not isinstance(raw, list):
+        raise ValueError("a classification is a list of layer decisions")
+    return tuple(
+        LayerDecision(layer=d["layer"], role=Role(d["role"]),
+                      confidence=float(d["confidence"]),
+                      reason=d["reason"],
+                      source=_checked_source(d["source"]))
+        for d in raw
+    )
+
+
+class FileClassifier:
+    """A classification made earlier, for this drawing or a cut of it.
+
+    A layer the file does not mention is IGNORE with source "default", so the
+    run says so (layer_unclassified) instead of silently trusting it.
+    """
+
+    def __init__(self, decisions: Classification) -> None:
+        self._by_layer = {d.layer: d for d in decisions}
+
+    def classify(self, stats) -> Classification:
+        return tuple(self._by_layer.get(s.name) or
+                     LayerDecision(s.name, Role.IGNORE, 0.0, "not in the classification file", "default")
+                     for s in stats)
+
+
 def read_cache(key: str) -> Classification | None:
     path = cache_dir() / f"{key}.json"
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        return tuple(
-            LayerDecision(layer=d["layer"], role=Role(d["role"]),
-                          confidence=float(d["confidence"]),
-                          reason=d["reason"],
-                          source=_checked_source(d["source"]))
-            for d in raw
-        )
+        return decode_classification(json.loads(path.read_text(encoding="utf-8")))
     except (OSError, ValueError, KeyError, TypeError):
         # A missing, truncated or hand-edited entry is a miss, not a crash.
         return None
@@ -131,11 +162,7 @@ def read_cache(key: str) -> Classification | None:
 def write_cache(key: str, decisions: Classification) -> None:
     directory = cache_dir()
     directory.mkdir(parents=True, exist_ok=True)
-    payload = [
-        {"layer": d.layer, "role": d.role.value, "confidence": d.confidence,
-         "reason": d.reason, "source": d.source}
-        for d in decisions
-    ]
+    payload = encode_classification(decisions)
     # Write-then-rename: a crash or a full disk mid-write must not leave a
     # half-written entry under the real key. os.replace is atomic within a
     # directory, so a reader sees the old entry or the new one, never both.
