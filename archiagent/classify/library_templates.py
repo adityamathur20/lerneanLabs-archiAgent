@@ -29,8 +29,9 @@ from archiagent.semantic import SymbolInstance
 TOLERANCE_FRACTION = 0.03
 MAX_MATCH_OPERATIONS = 200_000
 
-# The orientations a template may declare, in degrees. The owner's list; 315 is not in it.
-SUPPORTED_ANGLES = (0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0)
+# The orientations a template may declare, in degrees: every 45 degrees. Mirroring
+# is a separate switch, so these eight with mirror cover all sixteen poses.
+SUPPORTED_ANGLES = (0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0)
 DEFAULT_ANGLES = (0.0, 90.0, 180.0, 270.0)
 # A part's length over its longest chord does not change with scale, rotation or
 # mirroring; curve tessellation moves it by a few percent at most.

@@ -132,12 +132,15 @@ def detect_footprints(graph: WallGraph,
 
 
 def room_graph_with_openings(walls: tuple[WallSeg, ...] | list[WallSeg],
-                             openings) -> WallGraph:
+                             openings, gaps=()) -> WallGraph:
     """Keep doorway axes virtual while subtracting only real ground-level wall.
 
     Windows above a sill remain physical room boundaries. Only hosted doors
     or generic openings starting at floor level remove threshold wall area;
     the caller retains the original full-height hosts for IFC and footprints.
+
+    `gaps` are explicit, evidenced closures between wall ends (room_gaps.py).
+    They join room topology as thickness-free edges and change no wall.
     """
     intervals = {}
     for opening in openings:
@@ -188,7 +191,8 @@ def room_graph_with_openings(walls: tuple[WallSeg, ...] | list[WallSeg],
                                         thickness_ft=0.0, detector="virtual-opening", source_ids=ids))
             else:
                 segments.append(replace(wall, start=start, end=end))
-    return space_boundary_graph(segments)
+    from archiagent.geometry.room_gaps import gap_edges
+    return space_boundary_graph(segments, virtual_edges=gap_edges(gaps))
 
 
 def space_boundary_graph(walls: tuple[WallSeg, ...] | list[WallSeg],

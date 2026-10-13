@@ -27,6 +27,7 @@ import ifcopenshell.util.element
 import ifcopenshell.util.placement
 import ifcopenshell.util.shape_builder
 
+from archiagent.geometry.room_gaps import gaps_on_boundary
 from archiagent.ifc.wall_runs import build_runs
 from archiagent.model import BuildingModel
 from archiagent.ifc.appearance import APPEARANCE_BASIS, PRESENTATION_PALETTE, PresentationStyles
@@ -375,7 +376,11 @@ def _author_plan(f, body, axis, building, model, presentation, layer_sets):
     for i, space in enumerate(model.spaces):
         obj = entity("IfcSpace", f"S{i:03d}",
                      polygon_solid(space.boundary, space.holes, height_m), placement(), space=True)
-        provenance(obj, {"AreaSqft": space.area_sqft, "BoundaryBasis": "Interpreted room boundary"})
+        extra = {"AreaSqft": space.area_sqft, "BoundaryBasis": "Interpreted room boundary"}
+        closed = gaps_on_boundary(space.boundary, model.room_gaps)
+        if closed:
+            extra["ClosedGaps"] = closed      # edges assumed across a door-sized gap, not drawn
+        provenance(obj, extra)
 
     # Structural floors require a footprint. Room detection is deliberately
     # independent: missing footprints are reported rather than faked by rooms.

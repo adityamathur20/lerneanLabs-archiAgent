@@ -1,7 +1,7 @@
 # Multi-floor runs: detect the floors, confirm them, run each in parallel, build one building
 
 Date: 2026-10-12
-Status: design, awaiting owner review. Decisions confirmed by the owner 2026-10-12: confirm-first with a per-floor approve/disapprove list; classify layers once per file; one building IFC plus each floor's IFC; harvesting is a backend action.
+Status: design, reviewed by the owner 2026-10-13 with the changes in section 14. Decisions confirmed by the owner 2026-10-12: confirm-first with a per-floor approve/disapprove list; classify layers once per file; one building IFC plus each floor's IFC; harvesting is a backend action.
 Related: `2026-10-07-staged-pipeline-design.md`, `2026-09-24-symbol-library-design.md`, `plans/2026-10-08-scale-tool-and-symbol-approval.md`
 
 ## 1. What the owner asked for
@@ -23,7 +23,7 @@ Decided by the owner on 2026-10-12: confirm-first (no auto-start); classify once
 |---|---|
 | A reviewed window with a name, kind `plan`, `elevation_ft`, registration `origin` and optional `units_per_foot` is a `PlanRegion`; `--regions-file` runs several and `author_building` stacks them as storeys | `semantic.py`, `regions.py`, `ifc/author.py` |
 | `propose_regions` finds spatial clusters of geometry; it does not read titles, and says elevations "need review" | `regions.py` |
-| `author_building` refuses multiple plans without explicit elevations and unique region ids, and never invents storey spacing | `ifc/author.py` |
+| `author_building` refuses multiple plans without explicit elevations and unique region ids, and never invents storey spacing. **The floors feature supplies the elevations** (section 4), so every floor has one, marked as read or assumed | `ifc/author.py` |
 | A precomputed layer classification can be handed to a run | `cli._PrecomputedClassifier` |
 | A job is `pending -> preparing -> ready -> queued -> running -> succeeded|failed`; prepare stores `plan.dxf` and `plan.scale.json`; `/start` and `/retry` take options | service |
 | The worker is one process at concurrency 1; the VPS has 2 vCPU and 8 GB | `docker-compose.prod.yml` |
@@ -33,11 +33,13 @@ Floor labels in the owner's drawings: text under each plan ("GROUND FLOOR PLAN",
 
 ## 3. User flow
 
-1. Upload; prepare as today (convert, scale evidence). Prepare now also **detects floors** and **classifies layers once**.
-2. The Drawing view shows a **Floors** panel: one row per detected floor with its name, a highlighted box on the drawing, an elevation field, and **Approve / Disapprove**. Names and elevations are editable. A floor can also be added by drawing a box (v2).
-3. The Convert button stays disabled until **every** detected floor is decided and at least one is approved. The scale and wall-thickness sections apply to all floors.
-4. Convert creates one **building job** and one **floor job per approved floor**; floors run in parallel.
-5. The building page shows each floor's status and, when all have finished, the building IFC and the per-floor IFCs and reports.
+1. Upload; prepare as today (convert, scale evidence, and the level marks the drawing writes).
+2. In the Drawing view the user sets the **scale**, optional **wall thicknesses** and the **wall height** (slider, 1 to 50 ft, default 10, or the spacing the level marks agree on), then presses Convert.
+3. **The service then detects floors** (this needs the scale: plan sizes are judged in feet, which is why detection moved from prepare to after the scale is chosen) and classifies layers once. One plan, or none recognised: the run goes on exactly as before.
+4. Two or more plans: the job stops at `awaiting_floors` and the Drawing view shows a **Floors** panel: one row per floor with its name, an elevation field and **Approve / Disapprove**, and a Show button that zooms to the plan. Names and elevations are editable.
+5. The panel's Convert stays closed until **every** detected floor is decided and at least one is approved.
+6. Convert creates one **building job** and one **floor job per approved floor**; floors run in parallel.
+7. The building page shows each floor's progress and, when all have ended, the building IFC; each floor's IFC and report stay downloadable.
 
 A file with no detected floor labels behaves exactly as today (one region, the whole drawing). Elevations and sections (`ELEVATION`, `SECTION`, `FFL` markers) are detected and listed as "not a floor" so they can be left out.
 
@@ -46,7 +48,15 @@ A file with no detected floor labels behaves exactly as today (one region, the w
 - Input: the prepared DXF. Output: `plan.floors.json`, a list of `{id, name, bounds, elevation_ft, elevation_source, label_text, label_position, confidence}`.
 - Candidates are **spatial clusters** (`propose_regions`, with the drawing frame and annotation layers excluded) **named by floor labels**: TEXT/MTEXT matching a vocabulary (ground, first, second, third, fourth, terrace, roof, basement, stilt, parking, mezzanine, with "floor", "plan", "revised"). A label is assigned to the nearest cluster **below, then above, then beside** it, because the owner's drawings caption plans from beneath.
 - A cluster with no label stays listed as "unnamed plan" for the user to name or disapprove. A label with no cluster is reported, not guessed.
-- **Elevation**: read from a level marker when the file has one (`+3.6 FIRST FFL`, converted to feet by the scale); otherwise ground = 0 and each next floor = previous + the configured wall height, **marked assumed** and editable. Never silently invented: `elevation_source` says which.
+- **Elevation is never required.** A drawing with no level marker still yields a model for every floor. Where the file has a level marker (`+3.6 FIRST FFL`, converted to feet by the scale) it is used and `elevation_source` is `level-marker`; otherwise ground = 0 and each next floor = previous + the **wall height** (section 4a), `elevation_source` is `assumed`. A marker is a bonus, not a precondition. Elevations are editable in the Floors panel.
+
+## 4a. Wall height
+
+- The convert screen gets a **wall height** slider, **1 to 50 ft, default 10 ft**. Whatever it shows when Convert is pressed is the height archiAgent uses (`--height`).
+- If the drawing has level markers, the default shown is the **height implied by them** (the spacing between consecutive floors' marks, when the floors agree) instead of 10 ft, and the panel says where it came from. The user can still move it.
+- The height is **the same for every floor**. Floor k sits at ground + k x height, unless a level marker gives its elevation.
+- Exposed as `StartRequest.wall_height_ft` (1-50) and passed as `--height`.
+
 - Detection proposes; the user's approval is the only thing that makes a floor real.
 
 ## 5. Per-floor DXF
@@ -78,8 +88,9 @@ Consequences: the layer gate (a wall layer needs 70% confidence) is decided once
 ## 8. One building IFC, plus each floor's IFC
 
 - Each floor run writes its own IFC and `*.interpretation.json` as today.
-- A final **assemble** step (new, `python -m archiagent --assemble-building MANIFEST... --outputDir`) reads the floors' interpretation manifests, rebuilds their models by the existing replay path, and calls `author_building`. Elevations come from section 4 (user-confirmed); each floor's `origin` is its box's lower-left corner by default, so floors lie over one another. The alignment is shown to the user and flagged "assumed" until they correct it.
-- Output: `building.ifc` (one `IfcBuildingStorey` per floor) and `floor-<id>.ifc` each.
+- A final **assemble** step (`python -m archiagent --assemble-building MANIFEST... --outputDir`) reads the floors' interpretation manifests and calls `author_building`, which writes **one IFC with one `IfcBuildingStorey` per floor** at that floor's elevation (section 4).
+- Output: `building.ifc` and `floor-<id>.ifc` each.
+- **Deliberately not done yet** (owner, 2026-10-13): placing floors over one another, and everything that depends on understanding where slabs go: floor slabs and roofs per storey, double- and triple-height spaces, voids and stairs between floors. Each floor keeps its source coordinates in the building IFC. This is taken up after floors ship, because it first needs the slabs to be understood.
 
 ## 9. Per-floor report
 
@@ -104,6 +115,8 @@ Detection, run on the five multi-plan drawings, must find: Baglow 3 floors (stac
 
 Per-floor room typing needs closed rooms. Measured 2026-10-12 on two corpus drawings: about half of all wall endpoints touch nothing (SANJANA Suresh 43 of 98, Baglow 192 of 360), and the pipeline finds 1 space in each. Bridging gaps up to 8 ft closes 15 and 40 rooms respectively; up to 2 ft closes almost none. The gaps are door-sized, not tolerance noise. Cutting each floor out first is a precondition (a three-plan sheet cannot close rooms), and closing doorway gaps from recognised door and window symbols is the follow-on. See the owner's question of 2026-10-12.
 
+**Resolved 2026-10-13 (`feat/room-gaps`).** Each wall end that touches nothing is aimed at the nearest wall ahead of it within 8 ft and the gap is closed by a thickness-free virtual edge, for room topology only; walls are never changed. Evidence kinds: door-window symbol on the gap, collinear facing ends, nearly meeting corner, end stopping short of another wall. Measured on the frozen corpus models: Baglow 0 -> 25 rooms, SANJANA Suresh 1 -> 17, MB Panwar 2 -> 10; room labels inside a found room: 0 -> 17 of 37, 3 -> 17 of 24, 2 -> 11 of 34. Wider than 8 ft starts merging rooms (MB Panwar's largest room jumps from 212 to 1156 sq ft at 10 ft). What remains is mostly walls the detector never found, not gaps.
+
 ## 12. Not in this design
 
 Authoring furniture/plumbing into the IFC; drawing a floor box by hand (v2); cross-floor stair/void continuity; per-floor scale or wall-thickness overrides; room typing as a gated acceptance check.
@@ -111,7 +124,15 @@ Authoring furniture/plumbing into the IFC; drawing a floor box by hand (v2); cro
 ## 13. Decisions I made that you can overrule
 
 1. Default elevation when the file has no level marker: ground 0, then + wall height, marked assumed.
-2. Floors are aligned by each box's lower-left corner by default.
+2. Floors are detected after the scale is chosen, not at prepare, because plan sizes are judged in feet.
 3. Entities spanning floors are dropped from every floor and reported.
 4. A failed floor does not stop the others; the building is `partial`.
-5. Worker count starts at 3.
+5. Worker count starts at 3, and the per-tenant concurrent-run cap follows it.
+6. A drawing that calls itself a typical floor (`TYPICAL FLOOR PLAN`, `1st FLOOR TO 5th FLOOR PLAN`) is never split: one plan stands for many floors, which is a different feature.
+
+## 14. Changes from the owner's review, 2026-10-13
+
+1. A missing elevation must not stop the model: every floor gets one, read from a level marker when present (a bonus) and assumed otherwise.
+2. A **wall height slider** (1-50 ft, default 10, or the marker-implied height when the drawing has level markers), the same for every floor; each next floor = previous + that height.
+3. Assembling floors on top of one another, slabs, roofs and double/triple height are **deferred**; the building IFC is one IFC with every floor as a storey plus each floor's own IFC.
+4. Room detection is fixed first (section 11a); it shipped on `feat/room-gaps`: wall gaps up to 8 ft are closed for room detection with evidence, flagged, and switchable with `--room-gap-ft`.
