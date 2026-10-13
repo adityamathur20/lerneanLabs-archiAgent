@@ -628,9 +628,11 @@ def _write_scale_report(ps, header_units, input_path, args, out_path):
     `extracted` is computed exactly as the ladder computes it, so a UI can never
     offer a scale that --trust-extracted-scale would then reject.
     """
+    from archiagent.floors import FLOOR_WORDS, implied_wall_height, level_markers
     from archiagent.scale.extracted import extracted_scale
 
     extracted = extracted_scale(ps, args.scale_tolerance_in)
+    marks = level_markers(ps)
     points = [pt for p in ps.primitives for pt in p.coords]
     report = {
         "schema_version": 1,
@@ -642,6 +644,11 @@ def _write_scale_report(ps, header_units, input_path, args, out_path):
             "basis": extracted.basis,
         },
         "dimensions": len(ps.dimensions),
+        # Finished-floor marks the drawing writes (`+3.6 FIRST FFL`), in feet, and the
+        # floor-to-floor height they agree on: the wall height the panel starts from.
+        "levels": {"markers": [{"name": FLOOR_WORDS[m.word][0], "elevation_ft": round(m.elevation_ft, 3)}
+                               for m in marks],
+                   "wall_height_ft": implied_wall_height(marks)},
         "extents": {
             "min": [min(x for x, _ in points), min(y for _, y in points)] if points else None,
             "max": [max(x for x, _ in points), max(y for _, y in points)] if points else None,

@@ -100,3 +100,26 @@ def test_a_dwg_is_converted_and_its_dxf_kept(tmp_path):
     stem = Path(DWG).stem
     assert (out / f"{stem}.dxf").is_file()
     assert (out / f"{stem}.scale.json").is_file()
+
+
+# -- level marks and the wall height they imply -------------------------------------------------
+
+def with_level_marks(path: Path, labels) -> Path:
+    doc = ezdxf.readfile(str(path))
+    for i, label in enumerate(labels):
+        doc.modelspace().add_text(label, dxfattribs={"insert": (600, 40 * i), "height": 8})
+    doc.saveas(path)
+    return path
+
+
+def test_level_marks_give_a_wall_height_the_panel_can_start_from(tmp_path):
+    drawing = with_level_marks(room(tmp_path / "plan.dxf", 1, False),
+                               ["+0.6 M STILT FFL", "+3.6 FIRST FFL", "+6.6 SECOND FFL", "+9.6 THIRD FFL"])
+    report, _ = prepare(drawing, tmp_path / "out")
+    assert report["levels"]["wall_height_ft"] == pytest.approx(9.843, abs=0.01)
+    assert [m["name"] for m in report["levels"]["markers"]] == ["Stilt", "First floor", "Second floor", "Third floor"]
+
+
+def test_a_drawing_without_level_marks_offers_no_height(tmp_path):
+    report, _ = prepare(room(tmp_path / "plan.dxf", 1, False), tmp_path / "out")
+    assert report["levels"] == {"markers": [], "wall_height_ft": None}

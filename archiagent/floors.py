@@ -28,14 +28,16 @@ FLOOR_WORDS = {
     "basement": ("Basement", 0), "stilt": ("Stilt", 1), "parking": ("Parking", 1),
     "ground": ("Ground floor", 2), "mezzanine": ("Mezzanine", 3),
     "first": ("First floor", 4), "second": ("Second floor", 5), "third": ("Third floor", 6),
-    "fourth": ("Fourth floor", 7), "terrace": ("Terrace", 8), "roof": ("Roof", 9),
+    "fourth": ("Fourth floor", 7), "fifth": ("Fifth floor", 8), "sixth": ("Sixth floor", 9),
+    "seventh": ("Seventh floor", 10), "terrace": ("Terrace", 20), "roof": ("Roof", 21),
 }
 _WORD = re.compile(r"\b(" + "|".join(FLOOR_WORDS) + r")\b", re.I)
 _KIND = re.compile(r"\b(floor|plan|level)\b", re.I)
 _NOTE = re.compile(r"\b(up\s*to|upto|section|elevation|staircase|stair\s*case|below|above|existing)\b", re.I)
 # One plan standing for several floors: the drawing says so itself.
 _REPEATED = re.compile(r"\btypical\b|\b\d+\s*(?:st|nd|rd|th)?\s*floors?\s+to\b|\bto\s+\d+\s*(?:st|nd|rd|th)\s*floors?\b", re.I)
-_MARKER = re.compile(r"(?<![\w.])([+-]?\d+(?:\.\d+)?)\s*(mtrs?|mt|m|mm|ft|')(?![\w])", re.I)
+_LEVEL = re.compile(r"\b(ffl|fgl|lvl|level|rl)\b", re.I)
+_NUMBER = re.compile(r"(?<![\w.])([+-]?\d+(?:\.\d+)?)\s*(mtrs?|mt|m|mm|ft|')?(?![\w])", re.I)
 _UNIT_FT = {"m": FT_PER_M, "mt": FT_PER_M, "mtr": FT_PER_M, "mtrs": FT_PER_M,
             "mm": 1 / 304.8, "ft": 1.0, "'": 1.0}
 
@@ -96,18 +98,51 @@ def _clusters(ps: PrimitiveSet, upf: float, gap_ft: float):
     return out
 
 
-def _markers(ps: PrimitiveSet):
-    """{floor word: elevation_ft} for texts like `+3.6m FIRST FFL`."""
-    found = {}
+@dataclass(frozen=True)
+class LevelMarker:
+    word: str                 # "first", "terrace", ...
+    elevation_ft: float
+    text: str
+
+
+def level_markers(ps: PrimitiveSet) -> tuple[LevelMarker, ...]:
+    """Finished-floor-level marks such as `+3.6m FIRST FFL`, in feet, lowest first.
+
+    A mark's unit must be written. One that is not takes the unit the other
+    marks of the drawing agree on (Aiims Road writes `+3.6 FIRST FFL` and only
+    the terrace says `M`); with no written unit anywhere the number would be a
+    guess, so it is left out.
+    """
+    raw = []
     for t in ps.texts:
         s = _squash(t.text)
-        word = _WORD.search(s)
-        marker = _MARKER.search(s)
-        if word and marker and not _NOTE.search(s):
-            value = float(marker.group(1)) * _UNIT_FT[marker.group(2).lower()]
-            if math.isfinite(value):
-                found.setdefault(word.group(1).lower(), value)
-    return found
+        word, number = _WORD.search(s), _NUMBER.search(s)
+        if word and number and _LEVEL.search(s) and not _NOTE.search(s):
+            unit = (number.group(2) or "").lower() or None
+            raw.append((word.group(1).lower(), float(number.group(1)), unit, s))
+    units = {u for _, _, u, _ in raw if u}
+    shared = next(iter(units)) if len(units) == 1 else None
+    found = {}
+    for word, value, unit, text in raw:
+        unit = unit or shared
+        if unit is None:
+            continue
+        feet = value * _UNIT_FT[unit]
+        if math.isfinite(feet):
+            found.setdefault(word, LevelMarker(word, feet, text))
+    return tuple(sorted(found.values(), key=lambda m: (m.elevation_ft, m.word)))
+
+
+def implied_wall_height(markers, tolerance_ft: float = 0.35) -> float | None:
+    """The floor-to-floor spacing the marks agree on, 1 to 50 ft, else None."""
+    levels = [m.elevation_ft for m in markers]
+    steps = [b - a for a, b in zip(levels, levels[1:])]
+    if not steps:
+        return None
+    middle = sorted(steps)[len(steps) // 2]
+    if not 1.0 <= middle <= 50.0 or any(abs(s - middle) > tolerance_ft for s in steps):
+        return None
+    return round(middle, 3)
 
 
 def detect_floors(ps: PrimitiveSet, units_per_foot: float, wall_height_ft: float = 10.0,
@@ -165,7 +200,7 @@ def detect_floors(ps: PrimitiveSet, units_per_foot: float, wall_height_ft: float
         return ()
     entries.sort(key=lambda e: (e[0], e[2][1], e[2][0]))
 
-    markers = _markers(ps)
+    markers = {m.word: m.elevation_ft for m in level_markers(ps)}
     floors, seen, previous, unnamed = [], {}, None, 0
     for _, _, bounds, name, word, text, center, confidence in entries:
         if not name:

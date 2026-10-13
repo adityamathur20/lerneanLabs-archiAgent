@@ -128,3 +128,47 @@ def test_an_uncaptioned_plan_as_big_as_the_others_stays_for_the_user_to_name():
     prims = plan(0, 0) + plan(100, 0) + plan(200, 0)
     texts = [text("GROUND FLOOR PLAN", 30, -3), text("TERRACE FLOOR", 130, -3)]
     assert [f.name for f in detect_floors(drawing(prims, texts), 1.0)] == ["Ground floor", "Terrace", "Unnamed plan 3"]
+
+
+# -- level markers and the wall height they imply ---------------------------------------------
+
+from archiagent.floors import implied_wall_height, level_markers
+
+
+def marked(*labels):
+    return drawing([], [text(s, 0, 0) for s in labels])
+
+
+def test_markers_with_a_unit_are_read_in_feet():
+    found = level_markers(marked("+3.6m FIRST FFL"))
+    assert [(m.word, round(m.elevation_ft, 3)) for m in found] == [("first", 11.811)]
+
+
+def test_a_unitless_marker_takes_the_unit_the_others_in_the_set_carry():
+    # Aiims Road writes "+3.6 FIRST FFL" and only the last one says M.
+    found = level_markers(marked("+3.6 FIRST FFL", "+6.6 SECOND FFL", "+18.6 M TERRACE FFL"))
+    assert [m.word for m in found] == ["first", "second", "terrace"]
+    assert round(found[0].elevation_ft, 2) == round(3.6 * 3.28084, 2)
+
+
+def test_unitless_markers_alone_are_not_guessed():
+    assert level_markers(marked("+3.6 FIRST FFL", "+6.6 SECOND FFL")) == ()
+
+
+def test_the_height_is_the_spacing_the_markers_agree_on():
+    found = level_markers(marked("+0.6 M STILT FFL", "+3.6 FIRST FFL", "+6.6 SECOND FFL", "+9.6 THIRD FFL"))
+    assert implied_wall_height(found) == pytest.approx(3.0 * 3.28084, rel=1e-4)
+
+
+def test_markers_that_disagree_on_spacing_give_no_height():
+    found = level_markers(marked("+0.6 M STILT FFL", "+3.6 FIRST FFL", "+9.6 SECOND FFL"))
+    assert implied_wall_height(found) is None
+
+
+def test_one_marker_is_not_a_spacing():
+    assert implied_wall_height(level_markers(marked("+3.6m FIRST FFL"))) is None
+
+
+def test_a_spacing_outside_one_to_fifty_feet_is_not_offered():
+    found = level_markers(marked("+0.0 M GROUND FFL", "+0.1 M FIRST FFL"))
+    assert implied_wall_height(found) is None
