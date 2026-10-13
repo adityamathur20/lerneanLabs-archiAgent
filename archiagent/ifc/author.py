@@ -103,14 +103,24 @@ def author_building(models: tuple[BuildingModel, ...] | list[BuildingModel],
     return out_path
 
 
-def is_rectangular(area, bounding_area):
-    """Does an outline fill its bounding box, allowing for kernel precision?
+# Coordinates are rounded to a nanofoot, so each outline vertex is off by up to
+# ~5e-10 ft and the area by that times the perimeter. 2e-8 ft per unit of
+# perimeter is four times that noise and still a few nanometres: far below
+# anything a drawing can mean, and an angled joint misses its box by whole
+# fractions of the area.
+COORDINATE_NOISE_FT = 2e-8
 
-    Authoring and the reopened-IFC check must answer this the same way: an
-    absolute tolerance is unreachable on real coordinates, where a rectangle
-    misses its box by a few parts in 1e12, so the tolerance is relative.
+
+def is_rectangular(area, bounding_area, perimeter=0.0):
+    """Does an outline fill its bounding box, allowing for rounding and kernel precision?
+
+    Authoring and the reopened-IFC check must answer this the same way. A purely
+    relative tolerance is not enough: a small wall far from the origin misses its
+    box by parts in 1e9 of its own area once its coordinates are rounded (RAJEEV,
+    30,000 ft out), so the tolerance also allows the rounding noise along the
+    outline's `perimeter`.
     """
-    return abs(area - bounding_area) <= max(area, bounding_area)*1e-9
+    return abs(area - bounding_area) <= max(area, bounding_area)*1e-9 + perimeter*COORDINATE_NOISE_FT
 
 
 def _restore_rectangle(f, wall):
@@ -141,7 +151,8 @@ def _restore_rectangle(f, wall):
     # counting vertices would reject a rectangle; an angled joint never fills it.
     area = abs(sum(a[0]*b[1] - b[0]*a[1]
                    for a, b in zip(points, points[1:] + points[:1]))) / 2
-    if not is_rectangular(area, (x1 - x0) * (y1 - y0)):
+    perimeter = sum(math.dist(a, b) for a, b in zip(points, points[1:] + points[:1]))
+    if not is_rectangular(area, (x1 - x0) * (y1 - y0), perimeter):
         return False
     item.SweptArea = f.create_entity(
         "IfcRectangleProfileDef", ProfileType="AREA",
