@@ -91,6 +91,9 @@ def inventory_key(stats: tuple[LayerStats, ...], model: str,
                 "is_off": s.is_off,
                 "is_frozen": s.is_frozen,
                 "extent_ratio": round(s.extent_ratio, 4),
+                "thickness": (None if s.thickness is None else
+                              [round(s.thickness.paired_ft, 1), round(s.thickness.matched_ft, 1),
+                               round(s.thickness.long_share, 3), list(s.thickness.declared_in)]),
             }
             for s in stats
         ],

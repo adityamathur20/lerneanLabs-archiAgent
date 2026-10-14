@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Callable
 
 from archiagent.llm.usage import purpose as _llm_purpose
-from archiagent.classify.escalate import (ESCALATION_CAP, escalation_candidates,
+from archiagent.classify.escalate import (ESCALATION_CAP, corroborate, escalation_candidates,
                                           select_for_escalation)
 from archiagent.classify.inventory import LayerStats
 from archiagent.classify.layers import Classification
@@ -103,6 +103,9 @@ class DxfLayerClassifier:
                 max_tokens=self._max_tokens,
             )
         stage1 = decisions_from_reply(reply, stats)
+        stage1, corroborated = corroborate(stage1, stats)
+        for layer, note in corroborated:
+            self._report("info", layer, "layer_corroborated_by_thickness", note)
 
         uncapped = escalation_candidates(stage1, stats)
         candidates = select_for_escalation(stage1, stats, self._cap)
