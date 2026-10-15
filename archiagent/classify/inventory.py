@@ -18,6 +18,23 @@ AXIS_TOL_UNITS = 0.02  # source units; below this a segment counts as axis-align
 
 
 @dataclass(frozen=True)
+class ThicknessEvidence:
+    """How a layer's parallel pairs compare with the thicknesses the user declared.
+
+    Derived from geometry alone, before any role is chosen. Columns, projection
+    lines and planters can match too, so it is evidence, not a verdict.
+    """
+    paired_ft: float       # length of the layer's parallel-line / filled-body pairs
+    matched_ft: float      # the part of it within tolerance of a declared thickness
+    long_share: float      # share of matched length in runs of 4 ft or more (walls, not column sides)
+    declared_in: tuple[float, ...] = ()
+
+    @property
+    def share(self) -> float:
+        return self.matched_ft / self.paired_ft if self.paired_ft else 0.0
+
+
+@dataclass(frozen=True)
 class LayerStats:
     name: str
     path_count: int
@@ -37,6 +54,8 @@ class LayerStats:
     is_off: bool = False
     is_frozen: bool = False
     extent_ratio: float = 0.0                      # layer bbox area / drawing bbox area
+    # Only when the user declared wall thicknesses and the scale is known.
+    thickness: ThicknessEvidence | None = None
 
 
 def _percentile(sorted_vals: list[float], q: float) -> float:

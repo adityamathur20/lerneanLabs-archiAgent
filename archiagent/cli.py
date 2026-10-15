@@ -367,6 +367,20 @@ def _dxf_classifier(args, dxf_path: str, on_issue=None) -> LayerClassifier:
                              base_url=cfg.base_url, enabled=not args.no_cache)
 
 
+def _with_thickness_evidence(args, ps, stats, units_per_foot):
+    """The inventory with declared-thickness evidence per layer, when it can be computed.
+
+    Needs declared thicknesses and a known scale; without either the inventory is
+    returned as it was and classification behaves exactly as before.
+    """
+    declared = _declared_thickness_ft(args)
+    if not declared or not units_per_foot or args.pdfFilePath:
+        return stats
+    from archiagent.classify.thickness_evidence import attach_thickness_evidence
+    return attach_thickness_evidence(stats, ps, units_per_foot, declared,
+                                     args.wall_thickness_tolerance_in / 12)
+
+
 def _wall_adjudicator(args):
     """Vision review of uncertain wall candidates, or None when images must not be sent."""
     if (args.no_wall_adjudication or args.rules or args.walls
@@ -1137,7 +1151,15 @@ def _main(argv: list[str] | None = None) -> int:
                 return EXIT_USAGE
 
         if args.classify_only:
-            decisions = classifier.classify(stats)
+            evidence_scale = None
+            if _declared_thickness_ft(args):
+                try:
+                    evidence_scale, _, _ = _resolve_scale(args, ps, is_dxf, None,
+                                                          units_per_foot if is_dxf else None)
+                except ValueError:
+                    evidence_scale = None     # no scale yet: classify on the inventory alone
+            decisions = classifier.classify(
+                _with_thickness_evidence(args, ps, stats, evidence_scale))
             _print_decisions(decisions)
             if args.classification_out:
                 from archiagent.classify.cache import encode_classification
@@ -1198,6 +1220,7 @@ def _main(argv: list[str] | None = None) -> int:
                     out_path.with_name(f"{out_path.stem}.{plan_index}.ocr"),
                     Path(__file__).resolve().parents[1] / ".test-tmp" / "swift-cache")
             region_stats = build_inventory(source) if region else stats
+            region_stats = _with_thickness_evidence(args, source, region_stats, selected_scale)
             classification = classifier.classify(region_stats)
             selected_classifier = _PrecomputedClassifier(classification)
             measurements = _configuration(lambda: load_measurements(args.measurements, region),

@@ -198,6 +198,12 @@ DXF INVENTORY EVIDENCE
 - linetype: drafting convention. HIDDEN/DASHED can indicate overhead, concealed,
   existing or service geometry; CENTER can suggest axes. None is a class proof.
 - flags: off/frozen are display states, not proof of irrelevance or demolition.
+- thickness= (only when the user declared wall thicknesses): how much of the layer's
+  parallel-line pairs and filled bodies sit at those thicknesses, and how much of
+  that runs 4 ft or longer. A layer of long runs at the declared thicknesses is
+  wall-like; one with pairs at none of them is not. Column sides, projection lines
+  and planters can also match, but are short or named for what they are. This is
+  measured geometry, stronger than the name; it is not a verdict on its own.
 - size: layer bounding-box width/height in source units, not location or enclosed
   floor area. axis is a 0-1 orientation fraction; len_p50 is median segment length
   in source units. Compare within this drawing; no physical scale is supplied.
@@ -284,10 +290,16 @@ def _dxf_row(s: LayerStats) -> str:
     mix = " ".join(f"{k}:{v}" for k, v in s.entity_mix) or "-"
     lw = "default" if s.lineweight in (None, -3) else str(s.lineweight)
     flags = ",".join(f for f, on in (("frozen", s.is_frozen), ("off", s.is_off)) if on) or "-"
-    return (f'{json.dumps(s.name)} | entities={mix} | share={s.entity_share * 100:.1f}% '
-            f'| lineweight={lw} | linetype={s.linetype or "-"} | flags={flags} '
-            f'| size={x1 - x0:.0f}x{y1 - y0:.0f} | axis={s.axis_aligned_fraction:.2f} '
-            f'| len_p50={s.length_p50:.1f}')
+    row = (f'{json.dumps(s.name)} | entities={mix} | share={s.entity_share * 100:.1f}% '
+           f'| lineweight={lw} | linetype={s.linetype or "-"} | flags={flags} '
+           f'| size={x1 - x0:.0f}x{y1 - y0:.0f} | axis={s.axis_aligned_fraction:.2f} '
+           f'| len_p50={s.length_p50:.1f}')
+    t = s.thickness
+    if t is not None:
+        declared = "/".join(f"{d:g}" for d in t.declared_in)
+        row += (f' | thickness={t.matched_ft:.0f}ft of {t.paired_ft:.0f}ft of parallel pairs at the '
+                f'declared {declared}in ({t.share * 100:.0f}%), {t.long_share * 100:.0f}% in runs of 4ft or more')
+    return row
 
 
 def build_dxf_user_prompt(stats: tuple[LayerStats, ...]) -> str:
