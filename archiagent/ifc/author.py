@@ -280,8 +280,9 @@ def _author_plan(f, body, axis, building, model, presentation, layer_sets):
     for wall_run in layout.runs:
         angle = math.atan2(wall_run.end[1] - wall_run.start[1], wall_run.end[0] - wall_run.start[0])
         length_m, thickness_m = wall_run.length_ft * FT, wall_run.thickness_ft * FT
+        run_height_ft = wall_run.height_ft or model.wall_height_ft
         wall = entity("IfcWallStandardCase", wall_run.id,
-                      rectangle_solid(length_m, thickness_m, height_m),
+                      rectangle_solid(length_m, thickness_m, run_height_ft * FT),
                       placement(wall_run.start[0] * FT, wall_run.start[1] * FT, angle=angle))
         run("geometry.assign_representation", f, product=wall,
             representation=f.createIfcShapeRepresentation(
@@ -296,8 +297,10 @@ def _author_plan(f, body, axis, building, model, presentation, layer_sets):
                           "SourceIds": json.dumps(list(wall_run.source_ids)),
                           "ModelWallIndices": json.dumps(list(wall_run.members)),
                           "ThicknessSource": member.thickness_source,
-                          "HeightFt": model.wall_height_ft,
-                          "HeightEvidence": "See storey assumptions; height is not independently verified",
+                          "HeightFt": run_height_ft,
+                          "HeightEvidence": ("Railing: a thin wall on the edge of a void the room labels state"
+                                             if wall_run.height_ft else
+                                             "See storey assumptions; height is not independently verified"),
                           "ThicknessIn": wall_run.thickness_ft * 12,
                           "ScaleMaxResidualIn": model.scale.max_residual_in})
         for i in wall_run.members:
@@ -385,9 +388,15 @@ def _author_plan(f, body, axis, building, model, presentation, layer_sets):
             provenance(filling, {**info, "Representation": "Simplified rectangular infill; no frame detail"})
 
     for i, space in enumerate(model.spaces):
+        space_height_m = (space.clear_height_ft * FT) if space.clear_height_ft else height_m
         obj = entity("IfcSpace", f"S{i:03d}",
-                     polygon_solid(space.boundary, space.holes, height_m), placement(), space=True)
+                     polygon_solid(space.boundary, space.holes, space_height_m), placement(), space=True)
         extra = {"AreaSqft": space.area_sqft, "BoundaryBasis": "Interpreted room boundary"}
+        for key, value in (("Label", space.label), ("LevelOffsetFt", space.level_offset_ft),
+                           ("ClearHeightFt", space.clear_height_ft),
+                           ("DoubleHeight", space.double_height or None)):
+            if value not in (None, ""):
+                extra[key] = value
         closed = gaps_on_boundary(space.boundary, model.room_gaps)
         if closed:
             extra["ClosedGaps"] = closed      # edges assumed across a door-sized gap, not drawn
