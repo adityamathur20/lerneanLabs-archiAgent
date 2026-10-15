@@ -9,6 +9,7 @@ from archiagent.classify.inventory import LayerStats, build_inventory
 from archiagent.classify.layers import (WALL_CONFIDENCE_FLOOR, WALL_ROLES,
                                         LayerClassifier, layers_for_roles)
 from archiagent.geometry.junctions import resolve_junctions
+from archiagent.geometry.profile_fit import fit_walls_to_profiles
 from archiagent.geometry.room_gaps import MAX_GAP_FT, find_room_gaps
 from archiagent.geometry.spaces import (detect_spaces, space_boundary_graph,
                                         room_graph_with_openings)
@@ -134,6 +135,8 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
     graph = resolve_junctions(walls, min_dangle_ft=0)
     repair_snap_in, repair_extend_in = graph.snap_in, graph.extend_in
     hosts, openings = host_openings(graph.walls, symbols, wall_height_ft)
+    profile_fit = fit_walls_to_profiles(hosts, wall_profiles, openings)
+    hosts, openings = profile_fit.walls, profile_fit.openings
     first_adjustments = graph.adjustments
     graph = resolve_junctions(hosts, snap_in=0, extend_in=0, min_dangle_ft=0)
     graph = replace(graph, adjustments=first_adjustments)
@@ -229,7 +232,19 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
         room_issues = (Issue("info", "spaces", "room_gaps_assumed",
                              f"{len(room_gaps)} gap(s) of up to {room_gap_ft:g} ft between wall ends were "
                              f"treated as closed to find rooms ({parts}); no wall was changed"),)
-    return replace(model, issues=validate(model)+ingest_issues+geometry_issues+candidacy_issues+superseded+library_issues+thickness_issues+room_issues)
+    fit_issues = ()
+    if profile_fit.trimmed:
+        fit_issues = (Issue("info", "walls", "walls_fitted_to_profiles",
+                            f"{profile_fit.trimmed} wall(s) lay partly on an accepted wall profile and were "
+                            f"split at its edge: {profile_fit.hosted} part(s) left for the profile to host, "
+                            f"{profile_fit.dropped} sliver(s) or ragged remainder(s) left to the profile; "
+                            f"{profile_fit.narrowed} opening(s) cut back to the gap between profiles"),)
+    if profile_fit.lost_openings:
+        fit_issues += (Issue("warn", "walls", "opening_lost_to_profile_fit",
+                             f"{len(profile_fit.lost_openings)} opening(s) straddle the edge of an accepted "
+                             f"wall profile and no single wall can host them: "
+                             f"{', '.join(profile_fit.lost_openings[:8])}"),)
+    return replace(model, issues=validate(model)+ingest_issues+geometry_issues+candidacy_issues+superseded+library_issues+thickness_issues+room_issues+fit_issues)
 
 
 def extract_from_primitives(ps: PrimitiveSet, classifier: LayerClassifier,
