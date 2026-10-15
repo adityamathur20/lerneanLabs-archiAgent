@@ -176,3 +176,10 @@ def test_a_size_text_far_away_is_not_used():
     from archiagent.geometry.room_attributes import below_label_regions
     ps = _ps([text("LIVING ROOM BELOW", 7, 8.5), text("14'-3\" x 15'-9\"", 7, 40.0)], *_box(0, 0, 14.25, 15.75))
     assert below_label_regions(ps, 1.0) == ()
+
+
+def test_a_railing_whose_centreline_is_half_a_thickness_inside_the_void_edge_still_counts():
+    void = square(0, 0, 10, 10)
+    near = wall((10.17, 0), (10.17, 10), 0.33)          # a 4 in wall whose face is the void's edge
+    far = wall((11.5, 0), (11.5, 10), 0.33)
+    assert railing_wall_indices((near, far), (void.boundary,)) == {0}

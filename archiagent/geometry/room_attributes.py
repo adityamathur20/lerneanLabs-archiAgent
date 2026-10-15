@@ -190,7 +190,8 @@ def railing_wall_indices(walls, void_rings, tolerance_ft: float = 0.15) -> set[i
         if w.thickness_ft > RAILING_MAX_THICKNESS_FT or not edges:
             continue
         mid = ((w.start[0] + w.end[0]) / 2, (w.start[1] + w.end[1]) / 2)
-        reach = max(tolerance_ft, w.thickness_ft)
+        # The void's edge is a face line, the wall's own line is half a thickness from it.
+        reach = tolerance_ft + w.thickness_ft / 2
         if any(all(e.distance(Point(p)) <= reach for p in (w.start, mid, w.end)) for e in edges):
             out.add(i)
     return out
