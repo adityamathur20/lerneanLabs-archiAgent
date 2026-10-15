@@ -183,3 +183,10 @@ def test_a_railing_whose_centreline_is_half_a_thickness_inside_the_void_edge_sti
     near = wall((10.17, 0), (10.17, 10), 0.33)          # a 4 in wall whose face is the void's edge
     far = wall((11.5, 0), (11.5, 10), 0.33)
     assert railing_wall_indices((near, far), (void.boundary,)) == {0}
+
+
+def test_a_railing_that_runs_a_little_past_the_void_edge_still_counts():
+    void = square(0, 0, 10, 10)
+    long = wall((10.17, -0.8), (10.17, 10.0), 0.33)      # ends 0.8 ft beyond the edge
+    short_overlap = wall((10.17, 9.5), (10.17, 25.0), 0.33)   # only touches it
+    assert railing_wall_indices((long, short_overlap), (void.boundary,)) == {0}

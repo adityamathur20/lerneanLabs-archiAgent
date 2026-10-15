@@ -12,7 +12,7 @@ import math
 import re
 from dataclasses import dataclass
 
-from shapely.geometry import LineString, Point, Polygon
+from shapely.geometry import Point, Polygon
 
 #: A guard rail, not a storey: the height of a wall on a void's edge.
 RAILING_HEIGHT_FT = 3.5
@@ -183,15 +183,34 @@ def space_attributes(spaces, texts, units_per_foot: float):
 
 
 def railing_wall_indices(walls, void_rings, tolerance_ft: float = 0.15) -> set[int]:
-    """Walls that are railings: thin, and lying along the edge of a void."""
-    edges = [LineString(list(r) + [r[0]]) for r in void_rings if len(r) >= 3]
+    """Walls that are railings: thin, parallel to a void's edge, lying along most of it.
+
+    A wall may run a little past the edge it borders, so what counts is how much of
+    the wall lies along the edge, not whether its ends do.
+    """
+    edges = []
+    for ring in void_rings:
+        pts = list(ring)
+        for a, b in zip(pts, pts[1:] + pts[:1]):
+            n = math.dist(a, b)
+            if n > 1e-9:
+                edges.append((a, ((b[0] - a[0]) / n, (b[1] - a[1]) / n), n))
     out = set()
     for i, w in enumerate(walls):
-        if w.thickness_ft > RAILING_MAX_THICKNESS_FT or not edges:
+        if w.thickness_ft > RAILING_MAX_THICKNESS_FT or w.length_ft <= 1e-9:
             continue
-        mid = ((w.start[0] + w.end[0]) / 2, (w.start[1] + w.end[1]) / 2)
-        # The void's edge is a face line, the wall's own line is half a thickness from it.
-        reach = tolerance_ft + w.thickness_ft / 2
-        if any(all(e.distance(Point(p)) <= reach for p in (w.start, mid, w.end)) for e in edges):
-            out.add(i)
+        wx, wy = (w.end[0] - w.start[0]) / w.length_ft, (w.end[1] - w.start[1]) / w.length_ft
+        reach = tolerance_ft + w.thickness_ft / 2     # the void's edge is a face line
+        for a, (ux, uy), n in edges:
+            if abs(wx * uy - wy * ux) > 0.03:
+                continue
+            off = abs((w.start[0] - a[0]) * -uy + (w.start[1] - a[1]) * ux)
+            if off > reach:
+                continue
+            s0 = (w.start[0] - a[0]) * ux + (w.start[1] - a[1]) * uy
+            s1 = (w.end[0] - a[0]) * ux + (w.end[1] - a[1]) * uy
+            shared = min(max(s0, s1), n) - max(min(s0, s1), 0.0)
+            if shared >= 0.6 * min(n, w.length_ft):
+                out.add(i)
+                break
     return out
