@@ -120,3 +120,59 @@ def test_collinear_walls_of_different_height_are_not_one_run():
     # the two meet end to end; with equal heights they may share a run, with different heights never
     mixed = replace(straight, walls=(a, b))
     assert len(build_runs(mixed).runs) == 2
+
+
+# --- a void that is not a closed room ----------------------------------------------------------
+
+
+def _ps(texts, *lines):
+    from archiagent.primitives import Primitive, PrimitiveSet
+    prims = tuple(Primitive("line", ((x0, y0), (x1, y1)), "ANY", None, None, f"l{i}")
+                  for i, (x0, y0, x1, y1) in enumerate(lines))
+    return PrimitiveSet(prims, tuple(texts), 100.0, 100.0, "t.dxf", "s" * 64)
+
+
+def _box(x0, y0, x1, y1):
+    return [(x0, y0, x1, y0), (x1, y0, x1, y1), (x1, y1, x0, y1), (x0, y1, x0, y0)]
+
+
+def test_label_dimensions_are_read_in_feet():
+    from archiagent.geometry.room_attributes import label_dimensions_ft
+    assert label_dimensions_ft("LIVING ROOM BELOW 14'-3\" x 15'-9\"") == pytest.approx((14.25, 15.75))
+    assert label_dimensions_ft("DRESS 8'-0\"x7'-3\"") == pytest.approx((8.0, 7.25))
+    assert label_dimensions_ft("LIVING ROOM BELOW") is None
+
+
+def test_a_below_label_finds_the_rectangle_its_stated_size_fits():
+    from archiagent.geometry.room_attributes import below_label_regions
+    # 14'-3" x 15'-9" drawn with a 3 in error on one side, among other lines
+    lines = _box(0, 0, 14.25, 15.5) + _box(-6, -6, 30, 30)
+    ps = _ps([text("LIVING ROOM BELOW 14'-3\" x 15'-9\"", 7, 7.5)], *lines)
+    (ring,) = below_label_regions(ps, 1.0)
+    xs, ys = [p[0] for p in ring], [p[1] for p in ring]
+    assert (min(xs), min(ys), max(xs), max(ys)) == pytest.approx((0, 0, 14.25, 15.5))
+
+
+def test_a_below_label_whose_size_fits_nothing_makes_no_void():
+    from archiagent.geometry.room_attributes import below_label_regions
+    ps = _ps([text("LIVING ROOM BELOW 14'-3\" x 15'-9\"", 7, 7.5)], *_box(0, 0, 40, 40))
+    assert below_label_regions(ps, 1.0) == ()
+
+
+def test_a_below_label_without_a_stated_size_makes_no_void():
+    from archiagent.geometry.room_attributes import below_label_regions
+    ps = _ps([text("LIVING ROOM BELOW", 7, 7.5)], *_box(0, 0, 14.25, 15.75))
+    assert below_label_regions(ps, 1.0) == ()
+
+
+def test_a_size_in_its_own_text_item_next_to_the_label_is_used():
+    from archiagent.geometry.room_attributes import below_label_regions
+    lines = _box(0, 0, 14.25, 15.75)
+    ps = _ps([text("LIVING ROOM BELOW", 7, 8.5), text("14'-3\" x 15'-9\"", 7, 7.0)], *lines)
+    assert len(below_label_regions(ps, 1.0)) == 1
+
+
+def test_a_size_text_far_away_is_not_used():
+    from archiagent.geometry.room_attributes import below_label_regions
+    ps = _ps([text("LIVING ROOM BELOW", 7, 8.5), text("14'-3\" x 15'-9\"", 7, 40.0)], *_box(0, 0, 14.25, 15.75))
+    assert below_label_regions(ps, 1.0) == ()

@@ -8,6 +8,7 @@ Everything here is deterministic parsing of the drawing's own words.
 """
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 
@@ -63,6 +64,95 @@ def label_attributes(raw: str) -> LabelAttributes | None:
             and not attrs.double_height and not attrs.below):
         return None
     return attrs
+
+
+_FT_IN_X = (r"(\d+)\s*'\s*(?:-?\s*(\d+(?:\s*\d+/\d+)?)\s*\"?)?")
+_DIMENSIONS = re.compile(_FT_IN_X + r"\s*[xX]\s*" + _FT_IN_X)
+#: How far a stated room size may differ from the drawn one (a wall face is not the label's size).
+SIZE_TOLERANCE_FT = 0.75
+MIN_EDGE_FT = 2.0
+#: A size text this near a 'BELOW' label (feet) belongs to it.
+SIZE_TEXT_REACH_FT = 4.0
+
+
+def _inches(raw: str | None) -> float:
+    if not raw:
+        return 0.0
+    parts = raw.split()
+    whole = float(parts[0]) if "/" not in parts[0] else 0.0
+    frac = next((float(a) / float(b) for a, b in (p.split("/") for p in parts if "/" in p)), 0.0)
+    return whole + frac
+
+
+def label_dimensions_ft(raw: str) -> tuple[float, float] | None:
+    """The 'A'-B" x C'-D"' size a room label states, in feet, or None."""
+    m = _DIMENSIONS.search(clean_text(raw))
+    if not m:
+        return None
+    return (float(m.group(1)) + _inches(m.group(2)) / 12, float(m.group(3)) + _inches(m.group(4)) / 12)
+
+
+def below_label_regions(ps, units_per_foot: float) -> tuple[tuple, ...]:
+    """Rectangles for 'BELOW' labels, found from the label's stated size and the lines around it.
+
+    A void is often bounded by a thin line, a dashed edge and a wall, so it is not a
+    closed room and never appears as a space. The label states its own size; the nearest
+    long straight lines either side of the label that are that far apart are its edges.
+    """
+    sized = [(t, label_dimensions_ft(t.text)) for t in ps.texts]
+    sized = [(t, d) for t, d in sized if d is not None]
+    labels = []
+    for t in ps.texts:
+        a = label_attributes(t.text)
+        if a is None or not a.below:
+            continue
+        own = label_dimensions_ft(t.text)
+        if own is None:
+            # The size is often its own text item, a line under the name.
+            cx, cy = t.center()
+            near = [(math.dist((cx, cy), u.center()) / units_per_foot, d) for u, d in sized
+                    if u is not t]
+            near = [x for x in near if x[0] <= SIZE_TEXT_REACH_FT]
+            own = min(near, key=lambda x: x[0])[1] if near else None
+        if own is not None:
+            labels.append((t, own))
+    if not labels:
+        return ()
+    vertical, horizontal = [], []
+    for p in ps.primitives:
+        if p.kind in ("curve", "fill"):
+            continue
+        for a, b in p.segments():
+            (x0, y0), (x1, y1) = ((v / units_per_foot for v in a), (v / units_per_foot for v in b))
+            if abs(x0 - x1) < 0.02 and abs(y0 - y1) >= MIN_EDGE_FT:
+                vertical.append((x0, min(y0, y1), max(y0, y1)))
+            elif abs(y0 - y1) < 0.02 and abs(x0 - x1) >= MIN_EDGE_FT:
+                horizontal.append((y0, min(x0, x1), max(x0, x1)))
+    out = []
+    for t, (width, height) in labels:
+        cx, cy = (v / units_per_foot for v in t.center())
+        lefts = sorted({round(x, 3) for x, lo, hi in vertical if x < cx and lo <= cy <= hi}, reverse=True)[:5]
+        rights = sorted({round(x, 3) for x, lo, hi in vertical if x > cx and lo <= cy <= hi})[:5]
+        downs = sorted({round(y, 3) for y, lo, hi in horizontal if y < cy and lo <= cx <= hi}, reverse=True)[:5]
+        ups = sorted({round(y, 3) for y, lo, hi in horizontal if y > cy and lo <= cx <= hi})[:5]
+        best = None
+        for l in lefts:
+            for r in rights:
+                for d in downs:
+                    for u in ups:
+                        err = min(abs((r - l) - width) + abs((u - d) - height),
+                                  abs((r - l) - height) + abs((u - d) - width))
+                        if best is None or err < best[0]:
+                            best = (err, l, d, r, u)
+        if best is None:
+            continue
+        err, l, d, r, u = best
+        w, h = r - l, u - d
+        fits = ((abs(w - width) <= SIZE_TOLERANCE_FT and abs(h - height) <= SIZE_TOLERANCE_FT)
+                or (abs(w - height) <= SIZE_TOLERANCE_FT and abs(h - width) <= SIZE_TOLERANCE_FT))
+        if fits:
+            out.append(((l, d), (r, d), (r, u), (l, u)))
+    return tuple(out)
 
 
 def space_attributes(spaces, texts, units_per_foot: float):

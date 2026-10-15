@@ -11,7 +11,8 @@ from archiagent.classify.layers import (WALL_CONFIDENCE_FLOOR, WALL_ROLES,
 from archiagent.geometry.junctions import resolve_junctions
 from archiagent.geometry.gap_windows import find_gap_windows
 from archiagent.geometry.profile_fit import fit_walls_to_profiles
-from archiagent.geometry.room_attributes import RAILING_HEIGHT_FT, railing_wall_indices, space_attributes
+from archiagent.geometry.room_attributes import (RAILING_HEIGHT_FT, below_label_regions, railing_wall_indices,
+                                                 space_attributes)
 from archiagent.geometry.room_gaps import MAX_GAP_FT, find_room_gaps
 from archiagent.geometry.spaces import (detect_spaces, space_boundary_graph,
                                         room_graph_with_openings)
@@ -165,6 +166,12 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
     # What the room labels say: a "... BELOW" room is a void on this floor; levels and clear heights are stated.
     labels = space_attributes(spaces, ps.texts, scale.units_per_foot)
     label_voids = tuple(s.boundary for s, a in zip(spaces, labels) if a is not None and a.below)
+    # A void is often not a closed room: find it from the size its label states and the lines around it.
+    from shapely.geometry import Polygon as _Polygon
+    found = tuple(r for r in below_label_regions(ps, scale.units_per_foot)
+                  if not any(_Polygon(r).intersection(_Polygon(v)).area > 0.5 * _Polygon(r).area
+                             for v in label_voids))
+    label_voids = label_voids + found
     if label_voids:
         voids = voids + label_voids
         spaces = detect_spaces(room_graph, clear_boundary=True, voids=voids)
