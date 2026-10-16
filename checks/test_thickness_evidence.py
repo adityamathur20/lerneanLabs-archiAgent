@@ -230,3 +230,25 @@ def test_cli_attaches_evidence_only_when_thickness_is_declared_and_scale_known(t
     assert with_evidence.thickness is not None and with_evidence.thickness.share == pytest.approx(1.0)
     assert _with_thickness_evidence(none, ps, inventory, 12.0) == inventory
     assert _with_thickness_evidence(declared, ps, inventory, None) == inventory
+
+
+def test_vision_cannot_undo_a_thickness_corroboration(tmp_path, monkeypatch):
+    # Two wall layers compete, so both go to vision, which answers 0.60 again.
+    from archiagent.classify import dxf_classifier
+    from archiagent.classify.layers import WALL_CONFIDENCE_FLOOR
+
+    class TwoLayers(Client):
+        def __init__(self):
+            self.reply = {"layers": [{"name": n, "role": "wall_partition", "confidence": .6, "reason": "r"}
+                                     for n in ("WALL", "HAT")]}
+            self.prompts, self.vision_calls = [], 0
+
+    png = tmp_path / "x.png"
+    png.write_bytes(b"\x89PNG")
+    monkeypatch.setattr(dxf_classifier, "render_for_escalation",
+                        lambda dxf, names, cache: (png, {n: png for n in names}))
+    client = TwoLayers()
+    out = DxfLayerClassifier(client, tmp_path / "x.dxf", vision=True).classify(
+        (stats("WALL", evidence(1349, 1079, 0.9)), stats("HAT", evidence(267, 169, 0.95))))
+    assert client.vision_calls >= 1
+    assert all(d.confidence >= WALL_CONFIDENCE_FLOOR for d in out)
