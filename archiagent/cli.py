@@ -961,6 +961,7 @@ def _main(argv: list[str] | None = None) -> int:
                 destination = Path(args.outputDir) / f"{stem}.feedback.json"
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 template = feedback.write_template(args.feedback_template, destination)
+                feedback.write_sheet(args.feedback_template, destination.with_suffix(".svg"))
                 count = sum(len(m["elements"]) for m in template["models"])
                 print(f"feedback template -> {destination} ({count} elements)")
             else:

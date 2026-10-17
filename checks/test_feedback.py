@@ -70,3 +70,28 @@ def test_the_command_line_writes_and_summarises(tmp_path, capsys):
     assert written.is_file()
     assert main(["--feedback-summary", str(written)]) == 0
     assert "kinds" in capsys.readouterr().out
+
+
+# --- a labelled 2D sheet that matches the JSON ------------------------------------------------
+
+
+def test_every_element_gets_a_short_label_by_kind(tmp_path):
+    t = feedback.write_template(manifest(tmp_path), tmp_path / "f.feedback.json")
+    labels = {e["id"]: e["label"] for e in t["models"][0]["elements"]}
+    assert labels == {"wall:0": "W1", "wall:1": "W2", "opening:o1": "WN1", "space:0": "R1", "symbol:d1": "D1"}
+
+
+def test_the_sheet_prints_every_label_the_json_uses(tmp_path):
+    out = tmp_path / "f.feedback.svg"
+    t = feedback.write_template(manifest(tmp_path), tmp_path / "f.feedback.json")
+    feedback.write_sheet(manifest(tmp_path), out)
+    svg = out.read_text()
+    assert svg.startswith("<svg")
+    for e in t["models"][0]["elements"]:
+        assert f">{e['label']}<" in svg
+
+
+def test_the_command_line_writes_the_sheet_beside_the_json(tmp_path):
+    m = manifest(tmp_path)
+    assert main(["--feedback-template", str(m), "--outputDir", str(tmp_path / "out")]) == 0
+    assert (tmp_path / "out" / "plan.feedback.svg").is_file()
