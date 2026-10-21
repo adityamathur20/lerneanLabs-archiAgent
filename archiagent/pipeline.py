@@ -180,7 +180,7 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
                            clear_height_ft=a.clear_height_ft, double_height=a.double_height)
                    if a is not None else s for s, a in zip(spaces, labels))
     railings = railing_wall_indices(graph.walls, voids) if label_voids else set()
-    final_walls = tuple(replace(w, height_ft=RAILING_HEIGHT_FT) if i in railings else w
+    final_walls = tuple(replace(w, height_ft=RAILING_HEIGHT_FT, wall_class="railing") if i in railings else w
                         for i, w in enumerate(graph.walls))
     footprints = detect_footprints(boundary_graph, voids=voids)
     footprint_verified = False

@@ -24,9 +24,10 @@ from shapely.ops import unary_union
 from archiagent.ifc.author import FT, SLAB_THICKNESS_FT, is_rectangular
 from archiagent.ifc.profile_layout import host_names, profile_material_slices, wall_layout
 from archiagent.ifc.wall_runs import build_runs, run_footprints
+from archiagent.geometry.wall_classes import base_offset_for, height_for, ifc_type_for
 from archiagent.validate import GEOMETRY_EPS_FT
 
-PHYSICAL_CLASSES = ("IfcWall", "IfcSlab", "IfcDoor", "IfcWindow", "IfcColumn", "IfcBeam")
+PHYSICAL_CLASSES = ("IfcWall", "IfcRailing", "IfcSlab", "IfcDoor", "IfcWindow", "IfcColumn", "IfcBeam")
 VOLUME_ABS_TOL_M3 = 1e-8
 VOLUME_REL_TOL = 1e-5
 BOUNDS_TOL_M = 1e-5
@@ -117,14 +118,15 @@ def _expectations(models):
                 a, b = max(a, lo), min(b, hi)
                 if b > a:
                     cuts.append(box(a, op.sill_ft, b, op.sill_ft+op.height_ft))
-            run_height = wall_run.height_ft or model.wall_height_ft
-            section = box(lo,0,hi,run_height).difference(unary_union(cuts))
+            run_height = wall_run.height_ft or height_for(wall_run.wall_class, model.wall_height_ft)
+            base = base_offset_for(wall_run.wall_class)
+            section = box(lo,base,hi,base+run_height).difference(unary_union(cuts))
             if section.is_empty:
                 raise ValueError(f"wall run {wall_run.id} has no material after opening subtraction")
             _,zlo,_,zhi = section.bounds
-            void_area = box(lo,0,hi,run_height).area - section.area
+            void_area = box(lo,base,hi,base+run_height).area - section.area
             x0,y0,x1,y1 = shape.bounds
-            add("IfcWall", wall_run.id, model,
+            add(ifc_type_for(wall_run.wall_class)[0].replace("IfcWallStandardCase", "IfcWall"), wall_run.id, model,
                 shape.area*run_height - void_area*wall_run.thickness_ft,
                 (x0*FT, y0*FT, (z+zlo)*FT, x1*FT, y1*FT, (z+zhi)*FT))
         for i, footprint in enumerate(model.footprints):
@@ -192,16 +194,29 @@ def _check_joins(f, models, error):
         layout = build_runs(model)
         shapes = run_footprints(layout, model)
         scope = _scope(model)
-        by_name = {p.Name: p for p in f.by_type("IfcWall") if _product_scope(p) == scope}
+        by_name = {p.Name: p for cls in ("IfcWall", "IfcRailing") for p in f.by_type(cls)
+                   if _product_scope(p) == scope}
         footprints = {}
         for index, wall_run in enumerate(layout.runs):
             product = by_name.get(wall_run.id)
             if product is None:
                 continue
             label = f"{product.is_a()} #{product.id()} {product.Name}"
-            if not product.is_a("IfcWallStandardCase"):
-                error("wall_class_mismatch", label, "a straight wall run must be IfcWallStandardCase")
+            railing = wall_run.wall_class == "railing"
+            if railing != bool(product.is_a("IfcRailing")) or not (railing or product.is_a("IfcWallStandardCase")):
+                error("wall_class_mismatch", label,
+                      "a railing run must be IfcRailing; any other straight run IfcWallStandardCase")
             representations = product.Representation.Representations if product.Representation else ()
+            if railing:
+                try:
+                    solid = ifcopenshell.geom.create_shape(settings, product)
+                    verts, faces = list(solid.geometry.verts), list(solid.geometry.faces)
+                    triangles = [Polygon([(verts[i*3]/FT, verts[i*3+1]/FT) for i in faces[t:t+3]])
+                                 for t in range(0, len(faces), 3)]
+                    footprints[wall_run.id] = unary_union([t for t in triangles if t.is_valid and t.area > 0])
+                except Exception as exc:
+                    error("solid_geometry_failed", label, exc)
+                continue             # a railing has no wall axis or layered material to check
             identifiers = {r.RepresentationIdentifier for r in representations}
             usage = ifcopenshell.util.element.get_material(product)
             thickness = wall_run.thickness_ft*FT

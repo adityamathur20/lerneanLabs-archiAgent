@@ -33,6 +33,7 @@ class WallRun:
     source_ids: tuple[str, ...]
     priority: int
     height_ft: float | None = None
+    wall_class: str = ""
 
     @property
     def length_ft(self) -> float:
@@ -77,7 +78,7 @@ def _partners(model, point, indices):
                 continue
             if abs(a.thickness_ft - b.thickness_ft) > THICKNESS_TOL_FT:
                 continue
-            if a.height_ft != b.height_ft:
+            if a.height_ft != b.height_ft or a.wall_class != b.wall_class:
                 continue          # a railing and a wall are not one run
             (ax, ay), (bx, by) = _leaving(a, point), _leaving(b, point)
             if abs(ax*by - ay*bx) < PARALLEL_TOL and ax*bx + ay*by < 0:
@@ -332,7 +333,7 @@ def _build_runs(model) -> RunLayout:
         runs.append(WallRun(f"W{min(group):03d}", tuple(group), start, end,
                             first.thickness_ft, first.source_layer,
                             tuple(sorted({sid for i in group for sid in model.walls[i].source_ids})),
-                            0, first.height_ft))
+                            0, first.height_ft, first.wall_class))
         for i in group:
             run_of_wall[i] = run_index
     runs = tuple(runs)
