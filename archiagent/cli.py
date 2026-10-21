@@ -189,6 +189,8 @@ def _parser() -> argparse.ArgumentParser:
                         "every wall on numbered floor tiles with its class")
     p.add_argument("--element-stage-max-images", type=int, default=8, metavar="N",
                    help="at most N tile images per floor for the element stage (default 8)")
+    # Internal: the owner's element feedback for this drawing, applied before the element stage.
+    p.add_argument("--feedback-file", nargs="+", metavar="FEEDBACK_JSON", help=argparse.SUPPRESS)
     p.add_argument("--feedback-template", metavar="INTERPRETATION_JSON",
                    help="write <outputDir>/<stem>.feedback.json from a run's interpretation manifest: every "
                         "element it created with a blank verdict, for a person to fill in; needs no drawing")
@@ -390,6 +392,14 @@ def _with_thickness_evidence(args, ps, stats, units_per_foot):
     from archiagent.classify.thickness_evidence import attach_thickness_evidence
     return attach_thickness_evidence(stats, ps, units_per_foot, declared,
                                      args.wall_thickness_tolerance_in / 12)
+
+
+def _feedback_decisions(args, source):
+    """The owner's element feedback for this drawing (internal flag), or None."""
+    if not args.feedback_file:
+        return None
+    from archiagent.feedback import decisions_for
+    return decisions_for(args.feedback_file, source.source_sha256)
 
 
 def _region_stage(args):
@@ -1298,7 +1308,8 @@ def _main(argv: list[str] | None = None) -> int:
                                                                  if args.wall_thickness else None),
                                          thickness_exhaustive=args.wall_thickness_exhaustive,
                                          room_gap_ft=args.room_gap_ft,region_stage=region_stage,
-                                         gap_stage=gap_stage,**kwargs)
+                                         gap_stage=gap_stage,
+                                         feedback=_feedback_decisions(args, source),**kwargs)
             else:
                 model = extract_from_primitives(source,selected_classifier,units_per_foot=selected_scale,stats=region_stats,**kwargs)
             if region is None:

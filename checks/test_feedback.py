@@ -95,3 +95,52 @@ def test_the_command_line_writes_the_sheet_beside_the_json(tmp_path):
     m = manifest(tmp_path)
     assert main(["--feedback-template", str(m), "--outputDir", str(tmp_path / "out")]) == 0
     assert (tmp_path / "out" / "plan.feedback.svg").is_file()
+
+
+# --- feedback as reconcile precedence on re-run -----------------------------------------------
+
+from archiagent.feedback import apply_feedback, decisions_for
+from archiagent.geometry.walls import WallSeg
+
+
+def _filled(tmp_path, sha="x" * 64, verdicts=()):
+    t = feedback.write_template(manifest(tmp_path), tmp_path / "f.feedback.json")
+    by_label = {e["label"]: e for e in t["models"][0]["elements"]}
+    for label, verdict, reason, note in verdicts:
+        by_label[label].update(verdict=verdict, reason=reason, note=note)
+    t["source"]["source_sha256"] = sha
+    path = tmp_path / "filled.feedback.json"
+    path.write_text(json.dumps(t))
+    return path
+
+
+def test_a_wall_marked_not_a_wall_is_rejected_on_re_run(tmp_path):
+    path = _filled(tmp_path, verdicts=[("W1", "wrong", "not a wall", "")])
+    d = decisions_for([path], "x" * 64)
+    walls = (WallSeg((0, 0), (10, 0), 0.75, "WALL", "paired-line", "measured", ("a",)),
+             WallSeg((0, 5), (10, 5), 0.25, "FURN", "paired-line", "measured", ("b",)))
+    kept, notes = apply_feedback(walls, d)
+    assert [w.source_ids for w in kept] == [("b",)] and notes
+
+
+def test_reasons_and_notes_set_a_class(tmp_path):
+    path = _filled(tmp_path, verdicts=[("W1", "wrong", "not a wall", "this is a railing"),
+                                       ("W2", "wrong", "wrong height", "height should be in -Z axis")])
+    d = decisions_for([path], "x" * 64)
+    walls = (WallSeg((0, 0), (10, 0), 0.75, "WALL", "paired-line", "measured", ("a",)),
+             WallSeg((0, 5), (10, 5), 0.25, "FURN", "paired-line", "measured", ("b",)))
+    kept, _ = apply_feedback(walls, d)
+    assert [w.wall_class for w in kept] == ["railing", "pool_edge"]
+
+
+def test_feedback_for_another_drawing_is_ignored(tmp_path):
+    path = _filled(tmp_path, sha="y" * 64, verdicts=[("W1", "wrong", "not a wall", "")])
+    assert decisions_for([path], "x" * 64).reject_source_ids == frozenset()
+
+
+def test_an_empty_hash_is_resolved_through_the_manifest_the_file_names(tmp_path):
+    path = _filled(tmp_path, sha="", verdicts=[("W1", "wrong", "not a wall", "")])
+    m = json.loads((tmp_path / "plan.interpretation.json").read_text())
+    m["models"][0]["source_sha256"] = "z" * 64
+    (tmp_path / "plan.interpretation.json").write_text(json.dumps(m))
+    assert decisions_for([path], "z" * 64).reject_source_ids == frozenset({"a"})

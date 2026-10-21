@@ -33,7 +33,8 @@ from archiagent.validate import validate
 def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
               measurements=(), review=None, adjudicator=None, symbol_library=(),
               declared_thickness_ft=(), thickness_tolerance_ft=None,
-              thickness_exhaustive=False, room_gap_ft=MAX_GAP_FT, region_stage=None, gap_stage=None):
+              thickness_exhaustive=False, room_gap_ft=MAX_GAP_FT, region_stage=None, gap_stage=None,
+              feedback=None):
     import math
     from archiagent.classify.layers import candidate_layers
     from archiagent.geometry.candidacy import (MODE_TOLERANCE_FT, reconcile_symbols, select_walls,
@@ -131,6 +132,11 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
         declared_thickness_ft=declared_thickness_ft,
         thickness_tolerance_ft=tolerance_ft,
         thickness_exhaustive=thickness_exhaustive)
+    feedback_issues = ()
+    if feedback is not None:
+        from archiagent.feedback import apply_feedback
+        walls, notes = apply_feedback(walls, feedback)
+        feedback_issues = tuple(Issue("info", "walls", "owner_feedback_applied", n) for n in notes)
     if "symbols" in review:
         # Reviewed instance records are frozen decisions: candidacy may still
         # accept their geometry as a wall, but the symbol itself never splits.
@@ -301,7 +307,7 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
                               f"{len(label_voids)} void or pool region(s) have no slab on this floor; "
                               f"{railings} thin wall(s) on a void's edge are {RAILING_HEIGHT_FT:g} ft railings; "
                               f"{effects.pool_edges} wall(s) on a pool's edge go down below the floor"),)
-    label_issues += tuple(region_issues) + tuple(gap_issues)
+    label_issues += tuple(region_issues) + tuple(gap_issues) + feedback_issues
     fit_issues = ()
     if profile_fit.trimmed:
         fit_issues = (Issue("info", "walls", "walls_fitted_to_profiles",
@@ -341,14 +347,16 @@ def extract_from_dxf(ps: PrimitiveSet, classifier: LayerClassifier, *,
                      symbol_library=(), declared_thickness_ft=(),
                      thickness_tolerance_ft=None,
                      thickness_exhaustive=False,
-                     room_gap_ft=MAX_GAP_FT, region_stage=None, gap_stage=None) -> BuildingModel:
+                     room_gap_ft=MAX_GAP_FT, region_stage=None, gap_stage=None,
+                     feedback=None) -> BuildingModel:
     scale = ScaleResult(units_per_foot,"source-units-unverified",(),0.0,0)
     return _assemble(ps,classifier.classify(build_inventory(ps)),scale,wall_height_ft,
                      region=region,measurements=measurements,review=review,adjudicator=adjudicator,
                      symbol_library=symbol_library,declared_thickness_ft=declared_thickness_ft,
                      thickness_tolerance_ft=thickness_tolerance_ft,
                      thickness_exhaustive=thickness_exhaustive,
-                     room_gap_ft=room_gap_ft, region_stage=region_stage, gap_stage=gap_stage)
+                     room_gap_ft=room_gap_ft, region_stage=region_stage, gap_stage=gap_stage,
+                     feedback=feedback)
 
 
 def extract(pdf_path: str | Path, classifier: LayerClassifier, page: int = 0,

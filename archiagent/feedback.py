@@ -238,3 +238,89 @@ def _points(g):
 
 def _pts(points, tx):
     return " ".join("%s,%s" % tx(p) for p in points)
+
+
+# --- feedback as reconcile precedence on a re-run of the same drawing ---------------------------
+
+from dataclasses import dataclass, field, replace as _replace
+
+
+@dataclass(frozen=True)
+class FeedbackDecisions:
+    reject_sets: tuple[frozenset[str], ...] = ()
+    class_sets: tuple[tuple[frozenset[str], str], ...] = ()
+    missing: tuple[dict, ...] = ()
+
+    @property
+    def reject_source_ids(self) -> frozenset[str]:
+        return frozenset().union(*self.reject_sets) if self.reject_sets else frozenset()
+
+
+def _wall_class_from(reason: str, note: str) -> str:
+    text = f"{reason or ''} {note or ''}".casefold()
+    if "railing" in text:
+        return "railing"
+    if "pool" in text or "-z" in text:
+        return "pool_edge"
+    if "boundary" in text or "compound" in text or "site wall" in text:
+        return "site_wall"
+    if "parapet" in text:
+        return "parapet"
+    return ""
+
+
+def _sha_of(doc: dict, path: Path) -> set[str]:
+    shas = {doc.get("source", {}).get("source_sha256") or ""}
+    manifest = doc.get("source", {}).get("manifest") or ""
+    for candidate in (Path(manifest), path.parent / manifest):
+        if manifest and candidate.is_file():
+            m = json.loads(candidate.read_text())
+            shas |= {x.get("source_sha256", "") for x in m.get("models", [])}
+            break
+    return shas - {""}
+
+
+def decisions_for(paths, source_sha256: str) -> FeedbackDecisions:
+    """The owner's wall verdicts for this drawing (matched by its hash); other drawings' are ignored."""
+    rejects, classes, missing = [], [], []
+    for p in paths:
+        p = Path(p)
+        doc = json.loads(p.read_text())
+        if source_sha256 not in _sha_of(doc, p):
+            continue
+        for m in doc["models"]:
+            missing += m.get("missing", [])
+            for e in m["elements"]:
+                if e.get("kind") != "wall" or e.get("verdict") != "wrong" or not e.get("source_ids"):
+                    continue
+                ids = frozenset(e["source_ids"])
+                cls = _wall_class_from(e.get("reason"), e.get("note"))
+                if cls:
+                    classes.append((ids, cls))
+                elif (e.get("reason") or "") == "not a wall":
+                    rejects.append(ids)
+    return FeedbackDecisions(tuple(rejects), tuple(classes), tuple(missing))
+
+
+def _matches(ids: frozenset[str], wall_ids: tuple[str, ...]) -> bool:
+    shared = ids.intersection(wall_ids)
+    return bool(shared) and len(shared) >= 0.5 * max(1, len(wall_ids))
+
+
+def apply_feedback(walls, decisions: FeedbackDecisions):
+    """(walls with the owner's rejections removed and classes set, notes)."""
+    kept, rejected, classed = [], 0, 0
+    for w in walls:
+        if any(_matches(r, w.source_ids) for r in decisions.reject_sets):
+            rejected += 1
+            continue
+        cls = next((c for ids, c in decisions.class_sets if _matches(ids, w.source_ids)), "")
+        if cls:
+            w = _replace(w, wall_class=cls)
+            classed += 1
+        kept.append(w)
+    notes = []
+    if rejected or classed or decisions.missing:
+        notes.append(f"owner feedback: {rejected} wall(s) removed, {classed} given a class, "
+                     f"{len(decisions.missing)} missing element(s) noted")
+    return tuple(kept), tuple(notes)
