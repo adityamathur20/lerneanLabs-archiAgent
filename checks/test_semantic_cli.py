@@ -162,11 +162,18 @@ def parsed(*extra):
     return cli._parser().parse_args(["--dxfFilePath", "fixture.dxf", "--outputDir", "out", *extra])
 
 
-def test_wall_adjudication_is_on_by_default_for_llm_runs(monkeypatch):
+def test_the_element_stage_is_on_by_default_for_llm_runs(monkeypatch):
+    from archiagent.classify.element_stage import WallElementStage
+    monkeypatch.delenv("ARCHIAGENT_VISION", raising=False)
+    monkeypatch.setattr(cli, "build_client", lambda cfg: "client")
+    assert isinstance(cli._wall_adjudicator(parsed()), WallElementStage)
+
+
+def test_no_element_stage_falls_back_to_the_wall_adjudicator(monkeypatch):
     from archiagent.classify.wall_adjudicator import WallAdjudicator
     monkeypatch.delenv("ARCHIAGENT_VISION", raising=False)
     monkeypatch.setattr(cli, "build_client", lambda cfg: "client")
-    assert isinstance(cli._wall_adjudicator(parsed()), WallAdjudicator)
+    assert isinstance(cli._wall_adjudicator(parsed("--no-element-stage")), WallAdjudicator)
 
 
 @pytest.mark.parametrize("extra", [("--no-wall-adjudication",), ("--no_vision",), ("--rules",),

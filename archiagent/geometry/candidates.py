@@ -19,5 +19,5 @@ class CandidateDecision:
     signals: tuple[tuple[str, float], ...]
     score: float
     verdict: Literal["accept", "reject"]
-    verdict_source: Literal["deterministic", "adjudicated", "ambiguous-default", "ladder-run"]
+    verdict_source: Literal["deterministic", "adjudicated", "element-stage", "ambiguous-default", "ladder-run"]
     reason: str

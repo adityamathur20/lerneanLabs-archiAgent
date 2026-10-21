@@ -184,6 +184,11 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--assemble-building", metavar="FLOORS_JSON",
                    help="assemble the floors that have run (see --floors-dir) into one building IFC, "
                         "one storey per floor at the elevations in this file; needs no drawing")
+    p.add_argument("--no-element-stage", action="store_true",
+                   help="judge only uncertain walls, one picture each (the earlier wall adjudicator), instead of "
+                        "every wall on numbered floor tiles with its class")
+    p.add_argument("--element-stage-max-images", type=int, default=8, metavar="N",
+                   help="at most N tile images per floor for the element stage (default 8)")
     p.add_argument("--feedback-template", metavar="INTERPRETATION_JSON",
                    help="write <outputDir>/<stem>.feedback.json from a run's interpretation manifest: every "
                         "element it created with a blank verdict, for a person to fill in; needs no drawing")
@@ -392,9 +397,16 @@ def _wall_adjudicator(args):
     if (args.no_wall_adjudication or args.rules or args.walls
             or not _vision_enabled(args.no_vision)):
         return None
-    from archiagent.classify.wall_adjudicator import WallAdjudicator
     cfg = config_from_env(provider=args.provider, model=args.model, timeout=args.timeout)
-    return WallAdjudicator(build_client(cfg), max_tokens=_max_tokens(args))
+    if args.no_element_stage:
+        from archiagent.classify.wall_adjudicator import WallAdjudicator
+        return WallAdjudicator(build_client(cfg), max_tokens=_max_tokens(args))
+    from archiagent.classify.element_stage import WallElementStage
+    declared = _declared_thickness_ft(args)
+    context = ("Declared wall thicknesses: " + ", ".join(f"{t * 12:g} in" for t in declared)
+               if declared else "No wall thicknesses were declared.")
+    return WallElementStage(build_client(cfg), max_images=args.element_stage_max_images,
+                            max_tokens=_max_tokens(args), context=context)
 
 
 class _PrecomputedClassifier:
