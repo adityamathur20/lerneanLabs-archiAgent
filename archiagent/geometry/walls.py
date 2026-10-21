@@ -25,6 +25,8 @@ class WallSeg:
     detector: str  # "paired-line" | "hatch-body"
     thickness_source: str  # "measured" | "default"
     source_ids: tuple[str, ...] = ()
+    # None: the storey's wall height. Set where the drawing says otherwise (a railing on a void's edge).
+    height_ft: float | None = None
 
     @property
     def length_ft(self) -> float:

@@ -184,6 +184,12 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--assemble-building", metavar="FLOORS_JSON",
                    help="assemble the floors that have run (see --floors-dir) into one building IFC, "
                         "one storey per floor at the elevations in this file; needs no drawing")
+    p.add_argument("--feedback-template", metavar="INTERPRETATION_JSON",
+                   help="write <outputDir>/<stem>.feedback.json from a run's interpretation manifest: every "
+                        "element it created with a blank verdict, for a person to fill in; needs no drawing")
+    p.add_argument("--feedback-summary", nargs="+", metavar="FEEDBACK_JSON",
+                   help="precision by element kind, a recall estimate and the reasons given, from filled "
+                        "feedback files; needs no drawing")
     p.add_argument("--floors-dir", metavar="DIR",
                    help="with --assemble-building: DIR/<id>.dxf and DIR/<id>/<id>.interpretation.json "
                         "for each floor that ran")
@@ -943,6 +949,26 @@ def _main(argv: list[str] | None = None) -> int:
         specified = {arg.split("=", 1)[0] for arg in argv}
         if conflicts := sorted(specified & incompatible):
             print(f"error: replay cannot reinterpret frozen decisions with {', '.join(conflicts)}", file=sys.stderr)
+            return EXIT_USAGE
+
+    if args.feedback_template or args.feedback_summary:
+        from archiagent import feedback
+        try:
+            if args.feedback_template:
+                if not args.outputDir:
+                    raise ValueError("--feedback-template needs --outputDir")
+                stem = Path(args.feedback_template).name.split(".")[0]
+                destination = Path(args.outputDir) / f"{stem}.feedback.json"
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                template = feedback.write_template(args.feedback_template, destination)
+                feedback.write_sheet(args.feedback_template, destination.with_suffix(".svg"))
+                count = sum(len(m["elements"]) for m in template["models"])
+                print(f"feedback template -> {destination} ({count} elements)")
+            else:
+                print(json.dumps(feedback.summarize(args.feedback_summary), indent=2))
+            return EXIT_OK
+        except (ValueError, OSError, KeyError, json.JSONDecodeError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
             return EXIT_USAGE
 
     if args.assemble_building:

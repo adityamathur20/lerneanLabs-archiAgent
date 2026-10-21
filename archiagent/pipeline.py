@@ -9,7 +9,10 @@ from archiagent.classify.inventory import LayerStats, build_inventory
 from archiagent.classify.layers import (WALL_CONFIDENCE_FLOOR, WALL_ROLES,
                                         LayerClassifier, layers_for_roles)
 from archiagent.geometry.junctions import resolve_junctions
+from archiagent.geometry.gap_windows import find_gap_windows
 from archiagent.geometry.profile_fit import fit_walls_to_profiles
+from archiagent.geometry.room_attributes import (RAILING_HEIGHT_FT, below_label_regions, railing_wall_indices,
+                                                 space_attributes)
 from archiagent.geometry.room_gaps import MAX_GAP_FT, find_room_gaps
 from archiagent.geometry.spaces import (detect_spaces, space_boundary_graph,
                                         room_graph_with_openings)
@@ -134,6 +137,9 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
     # Instance exclusions replace the old global stair-spacing deletion rule.
     graph = resolve_junctions(walls, min_dangle_ft=0)
     repair_snap_in, repair_extend_in = graph.snap_in, graph.extend_in
+    # Windows drawn as thin lines across a wall gap have no symbol; they are made explicit before hosting.
+    gap_windows = find_gap_windows(ps, graph.walls, symbols, scale.units_per_foot, room_gap_ft) if room_gap_ft > 0 else ()
+    symbols = tuple(symbols) + gap_windows
     hosts, openings = host_openings(graph.walls, symbols, wall_height_ft)
     profile_fit = fit_walls_to_profiles(hosts, wall_profiles, openings)
     hosts, openings = profile_fit.walls, profile_fit.openings
@@ -155,8 +161,27 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
     voids = tuple(tuple(tuple(p) for p in ring) for ring in review.get("voids", ()))
     boundary_graph = space_boundary_graph(graph.walls)
     room_gaps = find_room_gaps(graph.walls, symbols, room_gap_ft)
-    spaces = detect_spaces(room_graph_with_openings(graph.walls, openings, gaps=room_gaps),
-                           clear_boundary=True, voids=voids)
+    room_graph = room_graph_with_openings(graph.walls, openings, gaps=room_gaps)
+    spaces = detect_spaces(room_graph, clear_boundary=True, voids=voids)
+    # What the room labels say: a "... BELOW" room is a void on this floor; levels and clear heights are stated.
+    labels = space_attributes(spaces, ps.texts, scale.units_per_foot)
+    label_voids = tuple(s.boundary for s, a in zip(spaces, labels) if a is not None and a.below)
+    # A void is often not a closed room: find it from the size its label states and the lines around it.
+    from shapely.geometry import Polygon as _Polygon
+    found = tuple(r for r in below_label_regions(ps, scale.units_per_foot)
+                  if not any(_Polygon(r).intersection(_Polygon(v)).area > 0.5 * _Polygon(r).area
+                             for v in label_voids))
+    label_voids = label_voids + found
+    if label_voids:
+        voids = voids + label_voids
+        spaces = detect_spaces(room_graph, clear_boundary=True, voids=voids)
+        labels = space_attributes(spaces, ps.texts, scale.units_per_foot)
+    spaces = tuple(replace(s, label=a.label, level_offset_ft=a.level_offset_ft,
+                           clear_height_ft=a.clear_height_ft, double_height=a.double_height)
+                   if a is not None else s for s, a in zip(spaces, labels))
+    railings = railing_wall_indices(graph.walls, voids) if label_voids else set()
+    final_walls = tuple(replace(w, height_ft=RAILING_HEIGHT_FT) if i in railings else w
+                        for i, w in enumerate(graph.walls))
     footprints = detect_footprints(boundary_graph, voids=voids)
     footprint_verified = False
     if "footprints" in review:
@@ -189,7 +214,7 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
     scale = replace(scale, residuals_in=residuals, max_residual_in=max(residuals, default=0.0),
                     matched_count=len(verified), total_dimensions=len(checks),
                     unmatched_count=len(checks)-len(verified))
-    model = BuildingModel(walls=graph.walls, junctions=graph.junctions,
+    model = BuildingModel(walls=final_walls, junctions=graph.junctions,
                           unresolved=graph.unresolved, spaces=spaces, scale=scale,
                           layer_decisions=classification, source_path=ps.source_path,
                           source_sha256=ps.source_sha256, wall_height_ft=wall_height_ft,
@@ -232,6 +257,17 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
         room_issues = (Issue("info", "spaces", "room_gaps_assumed",
                              f"{len(room_gaps)} gap(s) of up to {room_gap_ft:g} ft between wall ends were "
                              f"treated as closed to find rooms ({parts}); no wall was changed"),)
+    label_issues = ()
+    hosted_gap = {o.symbol_id for o in openings} & {w.id for w in gap_windows}
+    if gap_windows:
+        label_issues += (Issue("info", "openings", "windows_from_wall_gaps",
+                               f"{len(hosted_gap)} of {len(gap_windows)} window(s) drawn as thin lines across a wall "
+                               "gap had no symbol; each was made explicit and hosted"),)
+    if label_voids:
+        label_issues = (Issue("info", "spaces", "voids_from_labels",
+                              f"{len(label_voids)} room(s) labelled as below or open to the sky are voids on this "
+                              f"floor: no slab; {len(railings)} thin wall(s) on their edge are "
+                              f"{RAILING_HEIGHT_FT:g} ft railings"),)
     fit_issues = ()
     if profile_fit.trimmed:
         fit_issues = (Issue("info", "walls", "walls_fitted_to_profiles",
@@ -244,7 +280,7 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
                              f"{len(profile_fit.lost_openings)} opening(s) straddle the edge of an accepted "
                              f"wall profile and no single wall can host them: "
                              f"{', '.join(profile_fit.lost_openings[:8])}"),)
-    return replace(model, issues=validate(model)+ingest_issues+geometry_issues+candidacy_issues+superseded+library_issues+thickness_issues+room_issues+fit_issues)
+    return replace(model, issues=validate(model)+ingest_issues+geometry_issues+candidacy_issues+superseded+library_issues+thickness_issues+room_issues+fit_issues+label_issues)
 
 
 def extract_from_primitives(ps: PrimitiveSet, classifier: LayerClassifier,

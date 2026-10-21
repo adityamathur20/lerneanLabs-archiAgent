@@ -127,7 +127,10 @@ class DxfLayerClassifier:
             self._skip_all(candidates, "vision is off")
             return stage1
 
-        return self._escalate(stage1, stats, candidates)
+        # Vision answers from pictures; the declared thickness is measured geometry.
+        # A corroborated wall role must not drop back below the wall floor after it.
+        final, _ = corroborate(self._escalate(stage1, stats, candidates), stats)
+        return final
 
     def _escalate(self, stage1: Classification,
                  stats: tuple[LayerStats, ...],

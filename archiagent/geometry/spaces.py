@@ -24,6 +24,11 @@ class Space:
     boundary: tuple[Pt, ...]
     area_sqft: float
     holes: tuple[tuple[Pt, ...], ...] = ()
+    # What the room's own label says (geometry/room_attributes.py); empty when unlabelled.
+    label: str = ""
+    level_offset_ft: float | None = None
+    clear_height_ft: float | None = None
+    double_height: bool = False
 
 
 def _ring(coords):

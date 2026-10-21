@@ -117,14 +117,15 @@ def _expectations(models):
                 a, b = max(a, lo), min(b, hi)
                 if b > a:
                     cuts.append(box(a, op.sill_ft, b, op.sill_ft+op.height_ft))
-            section = box(lo,0,hi,model.wall_height_ft).difference(unary_union(cuts))
+            run_height = wall_run.height_ft or model.wall_height_ft
+            section = box(lo,0,hi,run_height).difference(unary_union(cuts))
             if section.is_empty:
                 raise ValueError(f"wall run {wall_run.id} has no material after opening subtraction")
             _,zlo,_,zhi = section.bounds
-            void_area = box(lo,0,hi,model.wall_height_ft).area - section.area
+            void_area = box(lo,0,hi,run_height).area - section.area
             x0,y0,x1,y1 = shape.bounds
             add("IfcWall", wall_run.id, model,
-                shape.area*model.wall_height_ft - void_area*wall_run.thickness_ft,
+                shape.area*run_height - void_area*wall_run.thickness_ft,
                 (x0*FT, y0*FT, (z+zlo)*FT, x1*FT, y1*FT, (z+zhi)*FT))
         for i, footprint in enumerate(model.footprints):
             area = Polygon(footprint.boundary, footprint.holes).area
