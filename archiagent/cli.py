@@ -575,10 +575,13 @@ def _assemble_building(args) -> int:
                          "one height applies to every floor")
     out_dir.mkdir(parents=True, exist_ok=True)
     ifc = author_building(models, out_dir / "building.ifc")
+    from archiagent.vertical import check_vertical
+    vertical = [{"severity": i.severity, "entity": i.entity, "code": i.code, "msg": i.msg}
+                for i in check_vertical(models)]
     (out_dir / "building.report.json").write_text(json.dumps({
         "building": {"ifc": ifc.name, "floors_assembled": len(models), "floors_missing": missing,
                      "wall_height_ft": heights.pop()},
-        "floors": reports}, indent=2), encoding="utf-8")
+        "floors": reports, "vertical": vertical}, indent=2), encoding="utf-8")
     print(f"building: {len(models)} floor(s) -> {ifc}" + (f"; not run: {', '.join(missing)}" if missing else ""))
     return EXIT_OK
 

@@ -261,7 +261,8 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
                           endpoint_adjustments=graph.adjustments,
                           wall_profiles=wall_profiles,
                           repair_snap_in=repair_snap_in, repair_extend_in=repair_extend_in,
-                          wall_candidates=candidate_decisions, room_gaps=room_gaps)
+                          wall_candidates=candidate_decisions, room_gaps=room_gaps,
+                          voids=tuple(tuple(tuple(p) for p in r) for r in voids))
     ingest_issues = tuple(Issue("warn", w.source_id, w.code, w.message)
                           for w in (*ps.warnings, *profile_warnings))
     geometry_issues = ()

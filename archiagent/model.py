@@ -56,6 +56,8 @@ class BuildingModel:
     wall_profiles: tuple[WallProfile, ...] = ()
     wall_candidates: tuple[CandidateDecision, ...] = ()
     room_gaps: tuple[RoomGap, ...] = ()
+    # Regions with no slab on this floor (voids, pools), kept for the floor-to-floor check.
+    voids: tuple[tuple[tuple[float, float], ...], ...] = ()
 
     def envelope(self) -> tuple[float, float, float, float]:
         xs = [c for w in self.walls for c in (w.start[0], w.end[0])]
