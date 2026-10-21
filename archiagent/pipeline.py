@@ -9,6 +9,7 @@ from archiagent.classify.inventory import LayerStats, build_inventory
 from archiagent.classify.layers import (WALL_CONFIDENCE_FLOOR, WALL_ROLES,
                                         LayerClassifier, layers_for_roles)
 from archiagent.geometry.junctions import resolve_junctions
+from archiagent.classify.gap_stage import apply_gap_kinds
 from archiagent.geometry.gap_windows import find_gap_windows
 from archiagent.geometry.profile_fit import fit_walls_to_profiles
 from archiagent.geometry.region_effects import apply_regions, carry_classes
@@ -32,7 +33,7 @@ from archiagent.validate import validate
 def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
               measurements=(), review=None, adjudicator=None, symbol_library=(),
               declared_thickness_ft=(), thickness_tolerance_ft=None,
-              thickness_exhaustive=False, room_gap_ft=MAX_GAP_FT, region_stage=None):
+              thickness_exhaustive=False, room_gap_ft=MAX_GAP_FT, region_stage=None, gap_stage=None):
     import math
     from archiagent.classify.layers import candidate_layers
     from archiagent.geometry.candidacy import (MODE_TOLERANCE_FT, reconcile_symbols, select_walls,
@@ -143,7 +144,15 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
     # Windows drawn as thin lines across a wall gap have no symbol; they are made explicit before hosting.
     gap_windows = find_gap_windows(ps, graph.walls, symbols, scale.units_per_foot, room_gap_ft) if room_gap_ft > 0 else ()
     symbols = tuple(symbols) + gap_windows
-    hosts, openings = host_openings(graph.walls, symbols, wall_height_ft)
+    gap_issues, stage_walls = (), graph.walls
+    if gap_stage is not None and room_gap_ft > 0:
+        # The gaps nothing explains yet: a door, a window, an open passage, or a wall the detector missed.
+        open_gaps = tuple(g for g in find_room_gaps(graph.walls, symbols, room_gap_ft)
+                          if g.kind == "collinear" and g.length_ft >= 1.5)
+        kinds, gap_issues = gap_stage(ps, open_gaps, graph.walls, scale.units_per_foot)
+        stage_walls, gap_symbols = apply_gap_kinds(graph.walls, open_gaps, kinds)
+        symbols = symbols + gap_symbols
+    hosts, openings = host_openings(stage_walls, symbols, wall_height_ft)
     profile_fit = fit_walls_to_profiles(hosts, wall_profiles, openings)
     hosts, openings = profile_fit.walls, profile_fit.openings
     first_adjustments = graph.adjustments
@@ -291,7 +300,7 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
                               f"{len(label_voids)} void or pool region(s) have no slab on this floor; "
                               f"{railings} thin wall(s) on a void's edge are {RAILING_HEIGHT_FT:g} ft railings; "
                               f"{effects.pool_edges} wall(s) on a pool's edge go down below the floor"),)
-    label_issues += tuple(region_issues)
+    label_issues += tuple(region_issues) + tuple(gap_issues)
     fit_issues = ()
     if profile_fit.trimmed:
         fit_issues = (Issue("info", "walls", "walls_fitted_to_profiles",
@@ -331,14 +340,14 @@ def extract_from_dxf(ps: PrimitiveSet, classifier: LayerClassifier, *,
                      symbol_library=(), declared_thickness_ft=(),
                      thickness_tolerance_ft=None,
                      thickness_exhaustive=False,
-                     room_gap_ft=MAX_GAP_FT, region_stage=None) -> BuildingModel:
+                     room_gap_ft=MAX_GAP_FT, region_stage=None, gap_stage=None) -> BuildingModel:
     scale = ScaleResult(units_per_foot,"source-units-unverified",(),0.0,0)
     return _assemble(ps,classifier.classify(build_inventory(ps)),scale,wall_height_ft,
                      region=region,measurements=measurements,review=review,adjudicator=adjudicator,
                      symbol_library=symbol_library,declared_thickness_ft=declared_thickness_ft,
                      thickness_tolerance_ft=thickness_tolerance_ft,
                      thickness_exhaustive=thickness_exhaustive,
-                     room_gap_ft=room_gap_ft, region_stage=region_stage)
+                     room_gap_ft=room_gap_ft, region_stage=region_stage, gap_stage=gap_stage)
 
 
 def extract(pdf_path: str | Path, classifier: LayerClassifier, page: int = 0,
