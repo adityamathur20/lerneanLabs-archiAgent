@@ -42,6 +42,9 @@ For every number in the table, decide:
   site_wall  - compound or boundary wall of the plot, a garden or planter edge wall
   pool_edge  - the wall around a swimming pool (it goes down below the floor)
   retaining  - retaining wall
+  window     - a window drawn in the wall's own line: thin frame or glass lines where the
+               wall body is interrupted (it is built as a wall with a window in it)
+  door       - a door, gate or opening drawn in the wall's own line
   not_a_wall - anything else: stair treads or risers, cabinets, wardrobes, shelving,
                kitchen counters, a box drawn around a text label, door or window
                frames and sills, furniture, fixtures, hatching, dimension or grid lines

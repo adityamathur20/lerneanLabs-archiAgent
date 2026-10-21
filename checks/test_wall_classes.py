@@ -91,3 +91,32 @@ def test_walls_of_different_class_are_not_one_run():
     a = model.walls[0]
     b = replace(a, start=a.end, end=(a.end[0] + 5.0, a.end[1]), wall_class="parapet")
     assert len(build_runs(replace(model, walls=(a, b), junctions=(), openings=(), symbols=())).runs) == 2
+
+
+@pytest.mark.parametrize("shape", ["T", "L"])
+def test_a_railing_meeting_a_wall_validates(tmp_path, shape):
+    from archiagent.ifc.author import author_ifc
+    from archiagent.ifc.inspect import validate_export
+    from checks.test_semantic_ifc import fixture_model
+    a = WallSeg((0, 0), (20, 0), 0.75, "W", "paired-line", "measured", ("a",))
+    start = (10, 0) if shape == "T" else (20, 0)
+    b = WallSeg(start, (start[0], 8), 0.33, "W", "paired-line", "measured", ("b",), wall_class="railing")
+    graph = resolve_junctions((a, b), snap_in=0, extend_in=0, min_dangle_ft=0)
+    model = replace(fixture_model(), walls=graph.walls, junctions=graph.junctions, unresolved=graph.unresolved,
+                    openings=(), symbols=(), spaces=(), footprints=())
+    report = validate_export(author_ifc(model, tmp_path / "r.ifc"), model)
+    assert report["passed"], report["errors"]
+
+
+def test_a_run_classed_as_a_window_becomes_a_window_in_its_wall():
+    from archiagent.geometry.wall_classes import openings_from_classes
+    from archiagent.recognition import host_openings
+    w = WallSeg((0, 0), (6, 0), 0.75, "W", "paired-line", "measured", ("a",), wall_class="window")
+    walls, symbols = openings_from_classes((w,))
+    assert walls[0].wall_class == "" and [s.kind for s in symbols] == ["window"]
+    _, openings = host_openings(walls, symbols, 10.0)
+    assert [o.kind for o in openings] == ["window"] and openings[0].width_ft == pytest.approx(6.0)
+
+
+def test_window_and_door_are_wall_classes_the_model_may_answer():
+    assert {"window", "door"} <= set(WALL_CLASSES)

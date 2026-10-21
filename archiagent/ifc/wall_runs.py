@@ -287,7 +287,9 @@ def build_runs(model) -> RunLayout:
 def _build_runs(model) -> RunLayout:
     _, _, profile_mapping = wall_layout(model)
     eligible = [i for i in range(len(model.walls)) if i not in profile_mapping]
-    usable = set(eligible)
+    # A railing is authored as IfcRailing with no wall axis, so it never joins a wall:
+    # a junction it touches stays untrimmed, like one touching a profile wall.
+    usable = {i for i in eligible if model.walls[i].wall_class != "railing"}
 
     lines = _Groups(len(model.walls))
     for junction in model.junctions:

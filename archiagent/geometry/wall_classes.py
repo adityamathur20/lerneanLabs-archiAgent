@@ -9,7 +9,10 @@ Heights are rulings recorded in the element-stage plan; the owner may change the
 from __future__ import annotations
 
 WALL_CLASSES = ("exterior", "interior", "partition", "parapet", "railing", "site_wall",
-                "pool_edge", "retaining", "not_a_wall")
+                "pool_edge", "retaining", "window", "door", "not_a_wall")
+#: A run that is really an opening drawn in the wall line: it stays as the host wall
+#: and a window or door fills its length.
+OPENING_CLASSES = ("window", "door")
 
 PARAPET_HEIGHT_FT = 3.5
 RAILING_HEIGHT_FT = 3.5
@@ -36,3 +39,20 @@ def ifc_type_for(wall_class: str) -> tuple[str, str | None]:
     if wall_class == "parapet":
         return "IfcWallStandardCase", "PARAPET"
     return "IfcWallStandardCase", None
+
+
+def openings_from_classes(walls):
+    """(walls, symbols): a run classed window or door hosts an opening along its whole length."""
+    from dataclasses import replace
+
+    from archiagent.geometry.gap_windows import gap_symbol
+    from archiagent.geometry.room_gaps import RoomGap
+    out, symbols = [], []
+    for w in walls:
+        if w.wall_class in OPENING_CLASSES and w.length_ft > 1e-6:
+            symbols.append(gap_symbol(RoomGap(w.start, w.end, "collinear", w.source_ids), w.wall_class,
+                                      w.source_ids, "element-stage", 0.7, w.thickness_ft,
+                                      f"{w.wall_class} drawn in the wall line"))
+            w = replace(w, wall_class="")
+        out.append(w)
+    return tuple(out), tuple(symbols)

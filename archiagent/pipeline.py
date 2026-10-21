@@ -11,6 +11,7 @@ from archiagent.classify.layers import (WALL_CONFIDENCE_FLOOR, WALL_ROLES,
 from archiagent.geometry.junctions import resolve_junctions
 from archiagent.classify.gap_stage import apply_gap_kinds
 from archiagent.geometry.gap_windows import find_gap_windows
+from archiagent.geometry.wall_classes import openings_from_classes
 from archiagent.geometry.profile_fit import fit_walls_to_profiles
 from archiagent.geometry.region_effects import apply_regions, carry_classes
 from archiagent.geometry.room_attributes import (RAILING_HEIGHT_FT, below_label_regions, pool_label_regions,
@@ -132,6 +133,8 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
         declared_thickness_ft=declared_thickness_ft,
         thickness_tolerance_ft=tolerance_ft,
         thickness_exhaustive=thickness_exhaustive, bands=bands)
+    # A run the element stage named a window or door stays the host wall, with the opening in it.
+    walls, class_openings = openings_from_classes(walls)
     feedback_issues = ()
     if feedback is not None:
         from archiagent.feedback import apply_feedback
@@ -149,7 +152,7 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
     repair_snap_in, repair_extend_in = graph.snap_in, graph.extend_in
     # Windows drawn as thin lines across a wall gap have no symbol; they are made explicit before hosting.
     gap_windows = find_gap_windows(ps, graph.walls, symbols, scale.units_per_foot, room_gap_ft) if room_gap_ft > 0 else ()
-    symbols = tuple(symbols) + gap_windows
+    symbols = tuple(symbols) + gap_windows + class_openings
     gap_issues, stage_walls = (), graph.walls
     if gap_stage is not None and room_gap_ft > 0:
         # The gaps nothing explains yet: a door, a window, an open passage, or a wall the detector missed.
