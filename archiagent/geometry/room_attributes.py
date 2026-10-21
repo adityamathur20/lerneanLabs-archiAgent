@@ -23,6 +23,7 @@ _LEVEL = re.compile(r"\bLVL\.?\s*([+-])\s*" + _FT_IN, re.I)
 _CLEAR = re.compile(r"\bCLEAR\s*H(?:T|EIGHT)\.?\s*[-:=]?\s*" + _FT_IN, re.I)
 _DOUBLE = re.compile(r"\bDOUBLE\s*H[A-Z]*T\b|\bOPEN\s+TO\s+ABOVE\b", re.I)
 _BELOW = re.compile(r"\bBELOW\b|\bOPEN\s+TO\s+SKY\b", re.I)
+_POOL = re.compile(r"\bPOOL\b", re.I)
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,7 @@ class LabelAttributes:
     clear_height_ft: float | None = None
     double_height: bool = False
     below: bool = False          # a void on this floor: the room is on the floor below
+    pool: bool = False           # a swimming pool: below the floor, no slab
 
 
 def clean_text(raw: str) -> str:
@@ -59,9 +61,10 @@ def label_attributes(raw: str) -> LabelAttributes | None:
         clear_height_ft=_feet(clear.group(1), clear.group(2)) if clear else None,
         double_height=bool(_DOUBLE.search(text)),
         below=bool(_BELOW.search(text)),
+        pool=bool(_POOL.search(text)),
     )
     if (attrs.level_offset_ft is None and attrs.clear_height_ft is None
-            and not attrs.double_height and not attrs.below):
+            and not attrs.double_height and not attrs.below and not attrs.pool):
         return None
     return attrs
 
@@ -93,6 +96,16 @@ def label_dimensions_ft(raw: str) -> tuple[float, float] | None:
 
 
 def below_label_regions(ps, units_per_foot: float) -> tuple[tuple, ...]:
+    """Voids: rectangles for 'BELOW' labels (see `_sized_label_regions`)."""
+    return _sized_label_regions(ps, units_per_foot, lambda a: a.below)
+
+
+def pool_label_regions(ps, units_per_foot: float) -> tuple[tuple, ...]:
+    """Pools: rectangles for 'POOL' labels (see `_sized_label_regions`)."""
+    return _sized_label_regions(ps, units_per_foot, lambda a: a.pool)
+
+
+def _sized_label_regions(ps, units_per_foot: float, wanted) -> tuple[tuple, ...]:
     """Rectangles for 'BELOW' labels, found from the label's stated size and the lines around it.
 
     A void is often bounded by a thin line, a dashed edge and a wall, so it is not a
@@ -104,7 +117,7 @@ def below_label_regions(ps, units_per_foot: float) -> tuple[tuple, ...]:
     labels = []
     for t in ps.texts:
         a = label_attributes(t.text)
-        if a is None or not a.below:
+        if a is None or not wanted(a):
             continue
         own = label_dimensions_ft(t.text)
         if own is None:
@@ -178,11 +191,13 @@ def space_attributes(spaces, texts, units_per_foot: float):
             continue
         merged = label_attributes(" ".join(words)) or LabelAttributes()
         out.append(LabelAttributes(max(words, key=len), merged.level_offset_ft, merged.clear_height_ft,
-                                   merged.double_height, merged.below))
+                                   merged.double_height, merged.below, merged.pool))
     return tuple(out)
 
 
-def railing_wall_indices(walls, void_rings, tolerance_ft: float = 0.15) -> set[int]:
+def railing_wall_indices(walls, void_rings, tolerance_ft: float = 0.15,
+                         max_thickness_ft: float | None = RAILING_MAX_THICKNESS_FT,
+                         min_wall_share: float = 0.0) -> set[int]:
     """Walls that are railings: thin, parallel to a void's edge, lying along most of it.
 
     A wall may run a little past the edge it borders, so what counts is how much of
@@ -197,7 +212,7 @@ def railing_wall_indices(walls, void_rings, tolerance_ft: float = 0.15) -> set[i
                 edges.append((a, ((b[0] - a[0]) / n, (b[1] - a[1]) / n), n))
     out = set()
     for i, w in enumerate(walls):
-        if w.thickness_ft > RAILING_MAX_THICKNESS_FT or w.length_ft <= 1e-9:
+        if (max_thickness_ft is not None and w.thickness_ft > max_thickness_ft) or w.length_ft <= 1e-9:
             continue
         wx, wy = (w.end[0] - w.start[0]) / w.length_ft, (w.end[1] - w.start[1]) / w.length_ft
         reach = tolerance_ft + w.thickness_ft / 2     # the void's edge is a face line
@@ -210,7 +225,7 @@ def railing_wall_indices(walls, void_rings, tolerance_ft: float = 0.15) -> set[i
             s0 = (w.start[0] - a[0]) * ux + (w.start[1] - a[1]) * uy
             s1 = (w.end[0] - a[0]) * ux + (w.end[1] - a[1]) * uy
             shared = min(max(s0, s1), n) - max(min(s0, s1), 0.0)
-            if shared >= 0.6 * min(n, w.length_ft):
+            if shared >= 0.6 * min(n, w.length_ft) and shared >= min_wall_share * w.length_ft:
                 out.add(i)
                 break
     return out

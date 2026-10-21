@@ -27,6 +27,8 @@ class WallSeg:
     source_ids: tuple[str, ...] = ()
     # None: the storey's wall height. Set where the drawing says otherwise (a railing on a void's edge).
     height_ft: float | None = None
+    # What the wall is (geometry/wall_classes.py): "" is an ordinary storey-height wall.
+    wall_class: str = ""
 
     @property
     def length_ft(self) -> float:

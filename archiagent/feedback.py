@@ -18,7 +18,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 VERDICTS = ("correct", "wrong", "unsure")
-KINDS = ("wall", "door", "window", "opening", "space", "column", "stair", "beam", "void", "railing")
+KINDS = ("wall", "profile_wall", "door", "window", "opening", "space", "column", "stair", "beam", "void", "railing")
 REASONS = {
     "wall": ["not a wall", "wrong position", "wrong thickness", "wrong height", "should be railing",
              "site or boundary wall", "duplicate", "other"],
@@ -27,6 +27,7 @@ REASONS = {
     "opening": ["not an opening", "wrong position", "wrong width", "other"],
     "space": ["not a room", "merged rooms", "wrong label", "should be void", "other"],
     "column": ["not a column", "wrong size", "other"],
+    "profile_wall": ["not a wall", "wrong shape", "wrong height", "should be railing", "other"],
     "stair": ["not a stair", "other"],
     "beam": ["not a beam", "other"],
 }
@@ -42,7 +43,7 @@ def _centroid(ring):
     return [round(sum(xs) / len(xs), 2), round(sum(ys) / len(ys), 2)]
 
 
-PREFIX = {"wall": "W", "door": "D", "window": "WN", "opening": "O", "space": "R",
+PREFIX = {"wall": "W", "profile_wall": "WP", "door": "D", "window": "WN", "opening": "O", "space": "R",
           "column": "C", "stair": "ST", "beam": "B"}
 
 
@@ -60,6 +61,12 @@ def _labelled(model: dict) -> list[tuple[dict, dict]]:
                        "height_ft": w.get("height_ft") or model.get("wall_height_ft"),
                        "detector": w["detector"], "source_ids": list(w.get("source_ids", []))},
                       {"wall": (w["start"], w["end"], w["thickness_ft"]), "low": bool(w.get("height_ft"))}))
+    for pr in model.get("wall_profiles", []):
+        ring = pr.get("boundary") or []
+        if len(ring) >= 3:
+            pairs.append(({"id": f"profile:{pr['id']}", "kind": "profile_wall", "at_ft": _centroid(ring),
+                           "layer": pr.get("source_layer", ""), "source_ids": list(pr.get("source_ids", []))},
+                          {"profile": ring}))
     hosted = set()
     for o in model.get("openings", []):
         hosted.add(o.get("symbol_id", ""))
@@ -102,7 +109,7 @@ def write_template(manifest_path, out_path) -> dict:
                    "wrong, give a reason from reasons[kind]. Add anything the model did not build to missing, "
                    "with the nearest label in note. Leave verdict null to skip."),
         "verdicts": list(VERDICTS), "reasons": REASONS, "missing_kinds": list(KINDS),
-        "source": {"manifest": str(manifest_path), "source_sha256": doc.get("source_sha256", "")
+        "source": {"manifest": str(Path(manifest_path).resolve()), "source_sha256": doc.get("source_sha256", "")
                    if isinstance(doc, dict) else "", "versions": doc.get("versions", {}) if isinstance(doc, dict) else {}},
         "models": [{"region_id": m.get("region_id", ""), "storey": m.get("storey_name", ""),
                     "units_per_foot": (m.get("scale") or {}).get("units_per_foot"),
@@ -193,6 +200,8 @@ def write_sheet(manifest_path, out_path) -> Path:
         for e, g in pairs:
             if "ring" in g and g["ring"] and e["kind"] == "space":
                 parts.append(f'<polygon points="{_pts(g["ring"], tx)}" class="space"/>')
+            if "profile" in g:
+                parts.append(f'<polygon points="{_pts(g["profile"], tx)}" fill="{_COLOURS["wall"]}" opacity="0.6"/>')
         for e, g in pairs:
             if "wall" in g:
                 a, b, t = g["wall"]
@@ -217,7 +226,7 @@ def write_sheet(manifest_path, out_path) -> Path:
     style = ("<style>.bg{fill:none;stroke:#bbb;stroke-width:0.05}.space{fill:#fce8b2;opacity:.45}"
              ".op{fill:none;stroke-width:0.5}text{font:0.9px sans-serif;text-anchor:middle;dominant-baseline:middle;"
              "paint-order:stroke;stroke:#fff;stroke-width:0.25}.title{font-size:2px;text-anchor:start}</style>")
-    legend = ("<!-- W wall (orange = lowered, e.g. railing), D door, WN window, O opening, R room, "
+    legend = ("<!-- W wall (orange = lowered, e.g. railing), WP solid wall outline, D door, WN window, O opening, R room, "
               "C column, ST stair, B beam -->")
     svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2 -4 {x_offset + 2:.1f} {height + 6:.1f}" '
            f'style="background:#fff">{legend}{style}{"".join(parts)}{"".join(labels)}</svg>')
@@ -227,6 +236,8 @@ def write_sheet(manifest_path, out_path) -> Path:
 
 
 def _points(g):
+    if "profile" in g:
+        return list(g["profile"])
     if "wall" in g:
         return [g["wall"][0], g["wall"][1]]
     if "line" in g:
@@ -238,3 +249,100 @@ def _points(g):
 
 def _pts(points, tx):
     return " ".join("%s,%s" % tx(p) for p in points)
+
+
+# --- feedback as reconcile precedence on a re-run of the same drawing ---------------------------
+
+from dataclasses import dataclass, field, replace as _replace
+
+
+@dataclass(frozen=True)
+class FeedbackDecisions:
+    reject_sets: tuple[frozenset[str], ...] = ()
+    class_sets: tuple[tuple[frozenset[str], str], ...] = ()
+    missing: tuple[dict, ...] = ()
+
+    @property
+    def reject_source_ids(self) -> frozenset[str]:
+        return frozenset().union(*self.reject_sets) if self.reject_sets else frozenset()
+
+
+def _wall_class_from(reason: str, note: str) -> str:
+    text = f"{reason or ''} {note or ''}".casefold()
+    if "railing" in text:
+        return "railing"
+    if "pool" in text or "-z" in text:
+        return "pool_edge"
+    if "boundary" in text or "compound" in text or "site wall" in text:
+        return "site_wall"
+    if "parapet" in text:
+        return "parapet"
+    return ""
+
+
+def resolve_manifest(feedback_path, manifest: str) -> Path | None:
+    """The manifest a feedback file names, even when it was written relative to another folder."""
+    if not manifest:
+        return None
+    feedback_path = Path(feedback_path).resolve()
+    stripped = Path(*[part for part in Path(manifest).parts if part not in ("..", ".")])
+    for candidate in (Path(manifest), *(a / manifest for a in feedback_path.parents),
+                      *(a / stripped for a in feedback_path.parents)):
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
+def _sha_of(doc: dict, path: Path) -> set[str]:
+    shas = {doc.get("source", {}).get("source_sha256") or ""}
+    found = resolve_manifest(path, doc.get("source", {}).get("manifest") or "")
+    if found is not None:
+        m = json.loads(found.read_text())
+        shas |= {x.get("source_sha256", "") for x in m.get("models", [])}
+    return shas - {""}
+
+
+def decisions_for(paths, source_sha256: str) -> FeedbackDecisions:
+    """The owner's wall verdicts for this drawing (matched by its hash); other drawings' are ignored."""
+    rejects, classes, missing = [], [], []
+    for p in paths:
+        p = Path(p)
+        doc = json.loads(p.read_text())
+        if source_sha256 not in _sha_of(doc, p):
+            continue
+        for m in doc["models"]:
+            missing += m.get("missing", [])
+            for e in m["elements"]:
+                if e.get("kind") != "wall" or e.get("verdict") != "wrong" or not e.get("source_ids"):
+                    continue
+                ids = frozenset(e["source_ids"])
+                cls = _wall_class_from(e.get("reason"), e.get("note"))
+                if cls:
+                    classes.append((ids, cls))
+                elif (e.get("reason") or "") == "not a wall":
+                    rejects.append(ids)
+    return FeedbackDecisions(tuple(rejects), tuple(classes), tuple(missing))
+
+
+def _matches(ids: frozenset[str], wall_ids: tuple[str, ...]) -> bool:
+    shared = ids.intersection(wall_ids)
+    return bool(shared) and len(shared) >= 0.5 * max(1, len(wall_ids))
+
+
+def apply_feedback(walls, decisions: FeedbackDecisions):
+    """(walls with the owner's rejections removed and classes set, notes)."""
+    kept, rejected, classed = [], 0, 0
+    for w in walls:
+        if any(_matches(r, w.source_ids) for r in decisions.reject_sets):
+            rejected += 1
+            continue
+        cls = next((c for ids, c in decisions.class_sets if _matches(ids, w.source_ids)), "")
+        if cls:
+            w = _replace(w, wall_class=cls)
+            classed += 1
+        kept.append(w)
+    notes = []
+    if rejected or classed or decisions.missing:
+        notes.append(f"owner feedback: {rejected} wall(s) removed, {classed} given a class, "
+                     f"{len(decisions.missing)} missing element(s) noted")
+    return tuple(kept), tuple(notes)

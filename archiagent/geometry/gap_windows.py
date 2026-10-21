@@ -65,14 +65,24 @@ def find_gap_windows(ps, walls, symbols, units_per_foot: float,
         count = sum(1 for i, v in enumerate(distinct) if i == 0 or v - distinct[i - 1] >= MIN_SEPARATION_FT)
         if count < MIN_LINES:
             continue
-        mid = ((gap.start[0] + gap.end[0]) / 2, (gap.start[1] + gap.end[1]) / 2)
-        digest = hashlib.sha256(repr((gap.start, gap.end)).encode()).hexdigest()[:12]
-        out.append(SymbolInstance(
-            f"gapwin-{digest}", "window", mid, n, max(distinct) - min(distinct) or 0.25,
-            rotation_rad=math.atan2(uy, ux), source_ids=tuple(sorted(set(ids))),
-            evidence="wall-gap-lines", confidence=0.6,
-            boundary=(gap.start, gap.end),
-            properties=(("opening_start_ft", json.dumps(list(gap.start))),
-                        ("opening_end_ft", json.dumps(list(gap.end))),
-                        ("assumed", "window from thin lines across a wall gap"))))
+        out.append(gap_symbol(gap, "window", ids, "wall-gap-lines", 0.6,
+                              max(distinct) - min(distinct) or 0.25,
+                              "window from thin lines across a wall gap"))
     return tuple(out)
+
+
+def gap_symbol(gap, kind: str, source_ids, evidence: str, confidence: float,
+               depth_ft: float = 0.25, note: str = "") -> SymbolInstance:
+    """A door or window spanning exactly a wall gap, in the form host_openings hosts."""
+    n = gap.length_ft
+    ux, uy = (gap.end[0] - gap.start[0]) / n, (gap.end[1] - gap.start[1]) / n
+    mid = ((gap.start[0] + gap.end[0]) / 2, (gap.start[1] + gap.end[1]) / 2)
+    digest = hashlib.sha256(repr((gap.start, gap.end, kind)).encode()).hexdigest()[:12]
+    prefix = "gapwin" if evidence == "wall-gap-lines" else f"gap{kind}"
+    return SymbolInstance(
+        f"{prefix}-{digest}", kind, mid, n, depth_ft, rotation_rad=math.atan2(uy, ux),
+        source_ids=tuple(sorted(set(source_ids))), evidence=evidence, confidence=confidence,
+        boundary=(gap.start, gap.end),
+        properties=(("opening_start_ft", json.dumps(list(gap.start))),
+                    ("opening_end_ft", json.dumps(list(gap.end))),
+                    ("assumed", note or f"{kind} across a wall gap")))

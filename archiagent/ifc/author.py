@@ -28,6 +28,7 @@ import ifcopenshell.util.placement
 import ifcopenshell.util.shape_builder
 
 from archiagent.geometry.room_gaps import gaps_on_boundary
+from archiagent.geometry.wall_classes import base_offset_for, height_for, ifc_type_for
 from archiagent.ifc.wall_runs import build_runs
 from archiagent.model import BuildingModel
 from archiagent.ifc.appearance import APPEARANCE_BASIS, PRESENTATION_PALETTE, PresentationStyles
@@ -280,26 +281,34 @@ def _author_plan(f, body, axis, building, model, presentation, layer_sets):
     for wall_run in layout.runs:
         angle = math.atan2(wall_run.end[1] - wall_run.start[1], wall_run.end[0] - wall_run.start[0])
         length_m, thickness_m = wall_run.length_ft * FT, wall_run.thickness_ft * FT
-        run_height_ft = wall_run.height_ft or model.wall_height_ft
-        wall = entity("IfcWallStandardCase", wall_run.id,
+        run_height_ft = wall_run.height_ft or height_for(wall_run.wall_class, model.wall_height_ft)
+        base_ft = base_offset_for(wall_run.wall_class)
+        ifc_class, predefined = ifc_type_for(wall_run.wall_class)
+        wall = entity(ifc_class, wall_run.id,
                       rectangle_solid(length_m, thickness_m, run_height_ft * FT),
-                      placement(wall_run.start[0] * FT, wall_run.start[1] * FT, angle=angle))
-        run("geometry.assign_representation", f, product=wall,
-            representation=f.createIfcShapeRepresentation(
-                axis, "Axis", "Curve2D",
-                [f.createIfcPolyline([f.createIfcCartesianPoint((0.0, 0.0)),
-                                      f.createIfcCartesianPoint((length_m, 0.0))])]))
-        run("material.assign_material", f, products=[wall],
-            type="IfcMaterialLayerSetUsage", material=layer_set(thickness_m, wall_run.priority))
-        ifcopenshell.util.element.get_material(wall).OffsetFromReferenceLine = -thickness_m / 2
+                      placement(wall_run.start[0] * FT, wall_run.start[1] * FT,
+                                elevation=z + base_ft * FT, angle=angle),
+                      predefined_type=predefined)
+        if ifc_class != "IfcRailing":     # a railing has no wall axis or layered wall material
+            run("geometry.assign_representation", f, product=wall,
+                representation=f.createIfcShapeRepresentation(
+                    axis, "Axis", "Curve2D",
+                    [f.createIfcPolyline([f.createIfcCartesianPoint((0.0, 0.0)),
+                                          f.createIfcCartesianPoint((length_m, 0.0))])]))
+            run("material.assign_material", f, products=[wall],
+                type="IfcMaterialLayerSetUsage", material=layer_set(thickness_m, wall_run.priority))
+            ifcopenshell.util.element.get_material(wall).OffsetFromReferenceLine = -thickness_m / 2
         member = model.walls[wall_run.members[0]]
         provenance(wall, {"SourceLayer": wall_run.source_layer, "Detector": member.detector,
                           "SourceIds": json.dumps(list(wall_run.source_ids)),
                           "ModelWallIndices": json.dumps(list(wall_run.members)),
                           "ThicknessSource": member.thickness_source,
                           "HeightFt": run_height_ft,
+                          "WallClass": wall_run.wall_class or "wall",
+                          "BaseOffsetFt": base_ft,
                           "HeightEvidence": ("Railing: a thin wall on the edge of a void the room labels state"
                                              if wall_run.height_ft else
+                                             f"Class {wall_run.wall_class}: height by class" if wall_run.wall_class else
                                              "See storey assumptions; height is not independently verified"),
                           "ThicknessIn": wall_run.thickness_ft * 12,
                           "ScaleMaxResidualIn": model.scale.max_residual_in})
@@ -394,7 +403,8 @@ def _author_plan(f, body, axis, building, model, presentation, layer_sets):
         extra = {"AreaSqft": space.area_sqft, "BoundaryBasis": "Interpreted room boundary"}
         for key, value in (("Label", space.label), ("LevelOffsetFt", space.level_offset_ft),
                            ("ClearHeightFt", space.clear_height_ft),
-                           ("DoubleHeight", space.double_height or None)):
+                           ("DoubleHeight", space.double_height or None),
+                           ("RegionClass", space.region_class)):
             if value not in (None, ""):
                 extra[key] = value
         closed = gaps_on_boundary(space.boundary, model.room_gaps)

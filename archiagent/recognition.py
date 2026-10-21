@@ -392,7 +392,8 @@ def host_openings(walls,symbols,wall_height_ft):
                 if any(_spans_overlap(opening_start,opening_end,o.start,o.end) for o in openings):return
                 score=perpendicular+abs((lo+hi-low-high)/2)+abs(span-gap)*.2
                 host=WallSeg(start,end,a.thickness_ft,a.source_layer,"opening-host","measured",
-                             tuple(sorted(set(source_ids+symbol.source_ids))))
+                             tuple(sorted(set(source_ids+symbol.source_ids))),
+                             height_ft=a.height_ft,wall_class=a.wall_class)
                 candidates.append((score,len(walls),opening_start,opening_end,host))
 
             for j in range(i+1,len(walls)):

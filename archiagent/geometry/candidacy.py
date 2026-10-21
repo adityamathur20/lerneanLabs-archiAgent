@@ -50,13 +50,16 @@ class Context:
     declared_thickness_ft: tuple[float, ...] = ()
     thickness_tolerance_ft: float = MODE_TOLERANCE_FT
     thickness_exhaustive: bool = False
+    # Fitted from owner feedback (archiagent/calibrate.py); None keeps the defaults.
+    bands: tuple[float, float] | None = None
 
 
 def build_context(ps: PrimitiveSet, classification: Classification,
                   units_per_foot: float, *,
                   declared_thickness_ft: tuple[float, ...] = (),
                   thickness_tolerance_ft: float = MODE_TOLERANCE_FT,
-                  thickness_exhaustive: bool = False) -> Context:
+                  thickness_exhaustive: bool = False,
+                  bands: tuple[float, float] | None = None) -> Context:
     roles = {d.layer.casefold(): (d.role, d.confidence) for d in classification}
     outlines: dict[str, list[Polygon]] = {}
     glyphs: list[Point] = []
@@ -79,7 +82,7 @@ def build_context(ps: PrimitiveSet, classification: Classification,
                    {child: tuple(children[parent]) for child, parent in parents.items()},
                    parents, block_of, Counter(block_of.values()),
                    STRtree(glyphs) if glyphs else None, tuple(glyphs),
-                   declared_thickness_ft, thickness_tolerance_ft, thickness_exhaustive)
+                   declared_thickness_ft, thickness_tolerance_ft, thickness_exhaustive, bands)
 
 
 def _layer_role(wall: WallSeg, ctx: Context) -> float:
@@ -169,10 +172,10 @@ def combine(signals: tuple[tuple[str, float], ...]) -> float:
     return round((weighted + 1) / 2, 6)
 
 
-def band(score: float) -> str:
-    if score >= ACCEPT_FLOOR:
+def band(score: float, accept_floor: float = ACCEPT_FLOOR, reject_ceiling: float = REJECT_CEILING) -> str:
+    if score >= accept_floor:
         return "accept"
-    if score <= REJECT_CEILING:
+    if score <= reject_ceiling:
         return "reject"
     return "ambiguous"
 
@@ -301,11 +304,21 @@ def score_candidates(walls, ctx: Context) -> tuple[ScoredCandidate, ...]:
         vetoed = (ctx.thickness_exhaustive and ctx.declared_thickness_ft
                   and _thickness(w, modes, ctx.thickness_tolerance_ft) < 0)
         out.append(ScoredCandidate(candidate_id(w), w, signals, score,
-                                   "reject" if vetoed else band(score)))
+                                   "reject" if vetoed else
+                                   band(score, *((ctx.bands[1], ctx.bands[0]) if ctx.bands else ()))))
     return tuple(out)
 
 
 ADJUDICATION_CONFIDENCE_FLOOR = 0.70
+#: The element stage may overturn a settled deterministic accept only this sure (spec section 3.6).
+OVERRIDE_CONFIDENCE = 0.85
+#: An accept is settled only with margin over the accept floor (spec 3.3: strong evidence);
+#: a weak accept is uncertain and the element stage decides it like an ambiguous one.
+SETTLED_MARGIN = 0.10
+
+
+def is_settled(c) -> bool:
+    return c.band == "accept" and c.score >= ACCEPT_FLOOR + SETTLED_MARGIN
 # Symbols inferred ONLY from a layer's role are the same layer gate this module
 # removes. Their geometry stays visible to candidacy, which decides.
 YIELDING_KINDS = frozenset({"furniture", "stair", "electrical", "plumbing", "vehicle"})
@@ -361,13 +374,21 @@ def _explain(c: ScoredCandidate) -> str:
     return f"score {c.score:.2f} ({top or 'no decisive signal'})"
 
 
-def _decide(c: ScoredCandidate, verdict, on_wall_layer: bool) -> CandidateDecision:
+def _decide(c: ScoredCandidate, verdict, on_wall_layer: bool, source: str = "adjudicated") -> CandidateDecision:
+    if source == "element-stage" and c.band == "accept":
+        said = f"; stage said {verdict[0]} ({verdict[1]:.2f}): {verdict[2]}" if verdict else ""
+        floor = OVERRIDE_CONFIDENCE if is_settled(c) else ADJUDICATION_CONFIDENCE_FLOOR
+        if verdict is not None and verdict[1] >= floor:
+            return CandidateDecision(c.id, c.wall, c.signals, c.score,
+                                     "accept" if verdict[0] == "wall" else "reject", "element-stage",
+                                     f"{verdict[0]} ({verdict[1]:.2f}): {verdict[2]}")
+        return CandidateDecision(c.id, c.wall, c.signals, c.score, "accept", "deterministic", _explain(c) + said)
     if c.band != "ambiguous":
         return CandidateDecision(c.id, c.wall, c.signals, c.score, c.band, "deterministic", _explain(c))
     if verdict is not None and verdict[1] >= ADJUDICATION_CONFIDENCE_FLOOR:
         label, confidence, reason = verdict
         return CandidateDecision(c.id, c.wall, c.signals, c.score,
-                                 "accept" if label == "wall" else "reject", "adjudicated",
+                                 "accept" if label == "wall" else "reject", source,
                                  f"{label} ({confidence:.2f}): {reason}")
     # Unsettled: keep the outcome the layer gate gave before candidacy existed.
     return CandidateDecision(c.id, c.wall, c.signals, c.score,
@@ -378,7 +399,8 @@ def select_walls(ps: PrimitiveSet, proposed, classification: Classification, uni
                  *, adjudicator: Adjudicator | None = None,
                  declared_thickness_ft: tuple[float, ...] = (),
                  thickness_tolerance_ft: float = MODE_TOLERANCE_FT,
-                 thickness_exhaustive: bool = False
+                 thickness_exhaustive: bool = False,
+                 bands: tuple[float, float] | None = None
                  ) -> tuple[tuple[WallSeg, ...], tuple[CandidateDecision, ...], tuple[Issue, ...]]:
     """Accepted walls (in proposed order), a decision for every run, and issues."""
     proposed = tuple(proposed)
@@ -392,16 +414,21 @@ def select_walls(ps: PrimitiveSet, proposed, classification: Classification, uni
                               build_context(ps, classification, units_per_foot,
                                             declared_thickness_ft=declared_thickness_ft,
                                             thickness_tolerance_ft=thickness_tolerance_ft,
-                                            thickness_exhaustive=thickness_exhaustive))
+                                            thickness_exhaustive=thickness_exhaustive,
+                                            bands=bands))
     verdicts, issues = {}, []
     ambiguous = tuple(c for c in scored if c.band == "ambiguous")
-    if ambiguous and adjudicator is not None:
-        verdicts, adjudication_issues = adjudicator(ps, ambiguous, units_per_foot)
+    # The element stage judges accepted walls too: they need a class (site wall, parapet ...).
+    element_stage = bool(getattr(adjudicator, "wants_all", False))
+    asked = tuple(c for c in scored if c.band != "reject") if element_stage else ambiguous
+    if asked and adjudicator is not None:
+        verdicts, adjudication_issues = adjudicator(ps, asked, units_per_foot)
         issues.extend(adjudication_issues)
+    source = "element-stage" if element_stage else "adjudicated"
     decisions = [CandidateDecision(candidate_id(w), w, (), 0.0, "reject", "ladder-run",
                                    "evenly spaced parallel runs: stair treads or hatching")
                  for w in ladders]
-    decisions += [_decide(c, verdicts.get(c.id), c.wall.source_layer.casefold() in wall_layers)
+    decisions += [_decide(c, verdicts.get(c.id), c.wall.source_layer.casefold() in wall_layers, source)
                   for c in scored]
     kept_by_default = 0
     rejected_by_default = []
@@ -423,4 +450,26 @@ def select_walls(ps: PrimitiveSet, proposed, classification: Classification, uni
                             f"{kept_by_default} uncertain runs on wall layers kept, as before candidacy"))
     accepted_ids = {d.id for d in decisions if d.verdict == "accept"}
     accepted = tuple(w for w in proposed if candidate_id(w) in accepted_ids)
+    if element_stage:
+        accepted, summary = _apply_classes(accepted, getattr(adjudicator, "classes", {}), decisions)
+        issues.append(summary)
     return accepted, tuple(sorted(decisions, key=lambda d: d.id)), tuple(issues)
+
+
+def _apply_classes(accepted, classes, decisions):
+    """Accepted walls take the class the stage gave them, at or above the confidence floor."""
+    from collections import Counter
+    from dataclasses import replace as _replace
+    out, counts = [], Counter()
+    for w in accepted:
+        cls, conf = classes.get(candidate_id(w), ("", 0.0))
+        if cls and cls != "not_a_wall" and conf >= ADJUDICATION_CONFIDENCE_FLOOR:
+            w = _replace(w, wall_class=cls)
+        counts[w.wall_class or "unclassified"] += 1
+        out.append(w)
+    overturned = sum(1 for d in decisions if d.verdict_source == "element-stage" and d.verdict == "reject"
+                     and d.score >= ACCEPT_FLOOR)
+    by_class = ", ".join(f"{k} {v}" for k, v in sorted(counts.items()))
+    return tuple(out), Issue("info", "element-stage", "element_stage_summary",
+                             f"{len(out)} wall(s) by class: {by_class}; "
+                             f"{overturned} deterministic accept(s) overturned")
