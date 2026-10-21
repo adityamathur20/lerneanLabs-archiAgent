@@ -13,6 +13,10 @@ from shapely.geometry import Point, Polygon
 from archiagent.geometry.room_attributes import railing_wall_indices
 
 
+#: Share of a wall's own length that must lie along a pool's edge for it to be a pool edge.
+POOL_EDGE_WALL_SHARE = 0.8
+
+
 @dataclass(frozen=True)
 class RegionEffects:
     walls: tuple
@@ -25,7 +29,8 @@ def apply_regions(walls, spaces, classes: dict[int, str]) -> RegionEffects:
     walls = tuple(walls)
     voids = tuple(spaces[i].boundary for i, c in sorted(classes.items()) if c == "void")
     pools = tuple(spaces[i].boundary for i, c in sorted(classes.items()) if c == "pool")
-    edge = railing_wall_indices(walls, pools, max_thickness_ft=None) if pools else set()
+    # A pool edge must lie mostly along the pool: a long boundary wall that only passes it stays a wall.
+    edge = railing_wall_indices(walls, pools, max_thickness_ft=None, min_wall_share=POOL_EDGE_WALL_SHARE) if pools else set()
     rail = (railing_wall_indices(walls, voids) - edge) if voids else set()
     out = tuple(replace(w, wall_class="pool_edge") if i in edge else
                 replace(w, wall_class="railing") if i in rail else w for i, w in enumerate(walls))

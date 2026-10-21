@@ -196,7 +196,8 @@ def space_attributes(spaces, texts, units_per_foot: float):
 
 
 def railing_wall_indices(walls, void_rings, tolerance_ft: float = 0.15,
-                         max_thickness_ft: float | None = RAILING_MAX_THICKNESS_FT) -> set[int]:
+                         max_thickness_ft: float | None = RAILING_MAX_THICKNESS_FT,
+                         min_wall_share: float = 0.0) -> set[int]:
     """Walls that are railings: thin, parallel to a void's edge, lying along most of it.
 
     A wall may run a little past the edge it borders, so what counts is how much of
@@ -224,7 +225,7 @@ def railing_wall_indices(walls, void_rings, tolerance_ft: float = 0.15,
             s0 = (w.start[0] - a[0]) * ux + (w.start[1] - a[1]) * uy
             s1 = (w.end[0] - a[0]) * ux + (w.end[1] - a[1]) * uy
             shared = min(max(s0, s1), n) - max(min(s0, s1), 0.0)
-            if shared >= 0.6 * min(n, w.length_ft):
+            if shared >= 0.6 * min(n, w.length_ft) and shared >= min_wall_share * w.length_ft:
                 out.add(i)
                 break
     return out

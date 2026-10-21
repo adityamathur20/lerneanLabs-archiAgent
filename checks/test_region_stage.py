@@ -89,3 +89,10 @@ def test_a_pool_that_is_not_a_closed_room_is_found_from_its_stated_size():
     (ring,) = pool_label_regions(ps, 1.0)
     xs, ys = [p[0] for p in ring], [p[1] for p in ring]
     assert (min(xs), min(ys), max(xs), max(ys)) == pytest.approx((0, 0, 15, 13))
+
+
+def test_a_long_wall_that_only_passes_the_pool_is_not_a_pool_edge():
+    pool = square(0, 0, 10, 8)
+    boundary_wall = wall((-15, 0), (40, 0))          # 55 ft compound wall, 10 ft of it along the pool
+    effects = apply_regions((boundary_wall,), (pool,), {0: "pool"})
+    assert effects.walls[0].wall_class == ""
