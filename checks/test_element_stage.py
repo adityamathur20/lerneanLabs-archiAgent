@@ -108,12 +108,13 @@ class StubStage:
         return verdicts, ()
 
 
-def _select(monkeypatch, bands, stage):
+def _select(monkeypatch, bands, stage, scores=None):
     walls = tuple(WallSeg((i * 10.0, 0), (i * 10.0 + 8, 0), 0.75, "WALL", "paired-line", "measured", (f"s{i}",))
                   for i in range(len(bands)))
     by_wall = {w: b for w, b in zip(walls, bands)}
     monkeypatch.setattr(candidacy, "score_candidates", lambda ws, ctx: tuple(
-        _SC(candidacy.candidate_id(w), w, (), 0.5, by_wall[w]) for w in ws))
+        _SC(candidacy.candidate_id(w), w, (), (scores or {}).get(i, 0.9 if by_wall[w] == "accept" else 0.5),
+            by_wall[w]) for i, w in enumerate(ws)))
     monkeypatch.setattr(candidacy, "build_context", lambda *a, **k: None)
     from archiagent.classify.layers import LayerDecision
     from archiagent.classify.roles import Role
@@ -158,3 +159,23 @@ def test_classes_survive_a_frozen_manifest(tmp_path):
     doc = make_manifest((m,))
     back = _decode(doc["models"][0], BuildingModel, "m")
     assert back.walls[0].wall_class == "site_wall"
+
+
+def test_a_weak_accept_is_uncertain_and_the_stage_decides_it(monkeypatch):
+    accepted, decisions, _ = _select(monkeypatch, ["accept"], StubStage({"accept": ("not_wall", 0.75, "not_a_wall")}),
+                                     scores={0: 0.68})
+    assert accepted == () and decisions[0].verdict_source == "element-stage"
+
+
+def test_a_strong_accept_still_needs_the_override_confidence(monkeypatch):
+    accepted, decisions, _ = _select(monkeypatch, ["accept"], StubStage({"accept": ("not_wall", 0.8, "not_a_wall")}),
+                                     scores={0: 0.9})
+    assert len(accepted) == 1 and "not_wall (0.80)" in decisions[0].reason      # what the stage said is kept
+
+
+def test_the_tile_marks_only_strong_accepts_as_settled():
+    from dataclasses import replace as _r
+    from archiagent.classify.element_stage import is_settled
+    assert is_settled(_r(cand("a", 0, "accept"), score=0.9))
+    assert not is_settled(_r(cand("a", 0, "accept"), score=0.68))
+    assert not is_settled(_r(cand("a", 0, "ambiguous"), score=0.9))

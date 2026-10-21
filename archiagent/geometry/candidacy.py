@@ -310,8 +310,15 @@ def score_candidates(walls, ctx: Context) -> tuple[ScoredCandidate, ...]:
 
 
 ADJUDICATION_CONFIDENCE_FLOOR = 0.70
-#: The element stage may overturn a deterministic accept only this sure (spec section 3.6).
+#: The element stage may overturn a settled deterministic accept only this sure (spec section 3.6).
 OVERRIDE_CONFIDENCE = 0.85
+#: An accept is settled only with margin over the accept floor (spec 3.3: strong evidence);
+#: a weak accept is uncertain and the element stage decides it like an ambiguous one.
+SETTLED_MARGIN = 0.10
+
+
+def is_settled(c) -> bool:
+    return c.band == "accept" and c.score >= ACCEPT_FLOOR + SETTLED_MARGIN
 # Symbols inferred ONLY from a layer's role are the same layer gate this module
 # removes. Their geometry stays visible to candidacy, which decides.
 YIELDING_KINDS = frozenset({"furniture", "stair", "electrical", "plumbing", "vehicle"})
@@ -368,10 +375,14 @@ def _explain(c: ScoredCandidate) -> str:
 
 
 def _decide(c: ScoredCandidate, verdict, on_wall_layer: bool, source: str = "adjudicated") -> CandidateDecision:
-    if (c.band == "accept" and source == "element-stage" and verdict is not None
-            and verdict[0] == "not_wall" and verdict[1] >= OVERRIDE_CONFIDENCE):
-        return CandidateDecision(c.id, c.wall, c.signals, c.score, "reject", "element-stage",
-                                 f"not_wall ({verdict[1]:.2f}): {verdict[2]}")
+    if source == "element-stage" and c.band == "accept":
+        said = f"; stage said {verdict[0]} ({verdict[1]:.2f}): {verdict[2]}" if verdict else ""
+        floor = OVERRIDE_CONFIDENCE if is_settled(c) else ADJUDICATION_CONFIDENCE_FLOOR
+        if verdict is not None and verdict[1] >= floor:
+            return CandidateDecision(c.id, c.wall, c.signals, c.score,
+                                     "accept" if verdict[0] == "wall" else "reject", "element-stage",
+                                     f"{verdict[0]} ({verdict[1]:.2f}): {verdict[2]}")
+        return CandidateDecision(c.id, c.wall, c.signals, c.score, "accept", "deterministic", _explain(c) + said)
     if c.band != "ambiguous":
         return CandidateDecision(c.id, c.wall, c.signals, c.score, c.band, "deterministic", _explain(c))
     if verdict is not None and verdict[1] >= ADJUDICATION_CONFIDENCE_FLOOR:

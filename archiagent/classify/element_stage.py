@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from archiagent.classify.element_render import Item, assign, number_items, render as render_tile, tiles
 from archiagent.classify.llm_classifier import MAX_TOKENS
+from archiagent.geometry.candidacy import is_settled
 from archiagent.geometry.wall_classes import WALL_CLASSES
 from archiagent.llm.client import LLMSchemaError
 from archiagent.llm.usage import purpose as _llm_purpose
@@ -77,7 +78,7 @@ def build_rows(items, candidates) -> str:
         w = c.wall
         lines.append(f"#{item.number} | layer={json.dumps(w.source_layer)} | thickness_in={w.thickness_ft * 12:.1f} "
                      f"| length_ft={w.length_ft:.1f} | score={c.score:.2f} | "
-                     f"{'judged wall' if c.band == 'accept' else 'uncertain'}")
+                     f"{'judged wall' if is_settled(c) else 'uncertain'}")
     return "\n".join(lines)
 
 
@@ -125,7 +126,7 @@ class WallElementStage:
         self.classes = {}
         if not asked:
             return {}, ()
-        items = number_items(Item(0, c.id, "wall", (c.wall.start, c.wall.end), c.band == "accept") for c in asked)
+        items = number_items(Item(0, c.id, "wall", (c.wall.start, c.wall.end), is_settled(c)) for c in asked)
         xs = [p[0] for i in items for p in i.coords]
         ys = [p[1] for i in items for p in i.coords]
         boxes = tiles((min(xs) - 3, min(ys) - 3, max(xs) + 3, max(ys) + 3), max_tiles=self._max_images)
