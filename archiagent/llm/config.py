@@ -18,6 +18,7 @@ ENV_PROVIDER = "ARCHIAGENT_LLM_PROVIDER"
 ENV_MODEL = "ARCHIAGENT_LLM_MODEL"
 ENV_BASE_URL = "ARCHIAGENT_LLM_BASE_URL"
 ENV_TIMEOUT = "ARCHIAGENT_LLM_TIMEOUT"
+ENV_EFFORT = "ARCHIAGENT_LLM_EFFORT"
 
 PROVIDERS = ("anthropic", "openai")
 
@@ -32,6 +33,9 @@ class LLMConfig:
     # reasoning model can exceed that, and a timeout returns nothing at all --
     # not a partial classification -- so the wait has to be reachable.
     timeout: float | None = None
+    # Anthropic output_config.effort (low|medium|high|xhigh|max). None leaves
+    # the model's own default.
+    effort: str | None = None
 
 
 def config_from_env(env: Mapping[str, str] | None = None,
@@ -45,6 +49,7 @@ def config_from_env(env: Mapping[str, str] | None = None,
         model=model or e.get(ENV_MODEL) or DEFAULT_MODEL,
         base_url=e.get(ENV_BASE_URL) or None,
         timeout=timeout if timeout is not None else _float_or_none(e.get(ENV_TIMEOUT)),
+        effort=e.get(ENV_EFFORT) or None,
     )
 
 
@@ -52,7 +57,7 @@ def build_client(cfg: LLMConfig) -> LLMClient:
     if cfg.provider == "anthropic":
         from archiagent.llm.anthropic_client import AnthropicClient
         return AnthropicClient(model=cfg.model, base_url=cfg.base_url,
-                               timeout=cfg.timeout)
+                               timeout=cfg.timeout, effort=cfg.effort)
 
     if cfg.provider == "openai":
         if cfg.model == DEFAULT_MODEL:

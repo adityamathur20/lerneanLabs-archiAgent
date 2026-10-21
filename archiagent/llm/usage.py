@@ -6,8 +6,9 @@ unrelated places -- layer classification, wall adjudication, scale
 verification -- and the question being asked ("what does this drawing cost?")
 is about the run as a whole.
 
-Fresh input and cache reads are kept apart on purpose: providers bill them at
-different rates, so a report that folds them together cannot be turned into a
+Fresh input, cache reads and cache writes are kept apart on purpose: providers
+bill them at different rates (Anthropic: a read at a tenth of fresh input, a
+write at 1.25x), so a report that folds them together cannot be turned into a
 cost.
 """
 from __future__ import annotations
@@ -33,6 +34,7 @@ class CallRecord:
     output_tokens: int
     cached_input_tokens: int
     vision: bool
+    cache_write_input_tokens: int = 0
 
 
 @dataclass
@@ -41,7 +43,8 @@ class UsageLedger:
 
     def record(self, *, provider: str, model: str, input_tokens: int,
                output_tokens: int, cached_input_tokens: int = 0,
-               purpose: str | None = None, vision: bool = False) -> None:
+               purpose: str | None = None, vision: bool = False,
+               cache_write_input_tokens: int = 0) -> None:
         self.calls.append(CallRecord(
             provider=provider,
             model=model,
@@ -53,6 +56,7 @@ class UsageLedger:
             output_tokens=int(output_tokens or 0),
             cached_input_tokens=int(cached_input_tokens or 0),
             vision=bool(vision),
+            cache_write_input_tokens=int(cache_write_input_tokens or 0),
         ))
 
     def _sum(self, calls: list[CallRecord]) -> dict:
@@ -63,6 +67,7 @@ class UsageLedger:
             "input_tokens": sum(c.input_tokens for c in calls),
             "output_tokens": sum(c.output_tokens for c in calls),
             "cached_input_tokens": sum(c.cached_input_tokens for c in calls),
+            "cache_write_input_tokens": sum(c.cache_write_input_tokens for c in calls),
             "total_tokens": sum(c.input_tokens + c.output_tokens for c in calls),
         }
 
@@ -93,6 +98,7 @@ class UsageLedger:
                     "input_tokens": c.input_tokens,
                     "output_tokens": c.output_tokens,
                     "cached_input_tokens": c.cached_input_tokens,
+                    "cache_write_input_tokens": c.cache_write_input_tokens,
                 }
                 for c in self.calls
             ],
