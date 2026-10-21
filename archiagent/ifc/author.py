@@ -403,7 +403,8 @@ def _author_plan(f, body, axis, building, model, presentation, layer_sets):
         extra = {"AreaSqft": space.area_sqft, "BoundaryBasis": "Interpreted room boundary"}
         for key, value in (("Label", space.label), ("LevelOffsetFt", space.level_offset_ft),
                            ("ClearHeightFt", space.clear_height_ft),
-                           ("DoubleHeight", space.double_height or None)):
+                           ("DoubleHeight", space.double_height or None),
+                           ("RegionClass", space.region_class)):
             if value not in (None, ""):
                 extra[key] = value
         closed = gaps_on_boundary(space.boundary, model.room_gaps)

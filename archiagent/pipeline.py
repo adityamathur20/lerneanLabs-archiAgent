@@ -11,8 +11,11 @@ from archiagent.classify.layers import (WALL_CONFIDENCE_FLOOR, WALL_ROLES,
 from archiagent.geometry.junctions import resolve_junctions
 from archiagent.geometry.gap_windows import find_gap_windows
 from archiagent.geometry.profile_fit import fit_walls_to_profiles
-from archiagent.geometry.room_attributes import (RAILING_HEIGHT_FT, below_label_regions, railing_wall_indices,
+from archiagent.geometry.region_effects import apply_regions, carry_classes
+from archiagent.geometry.room_attributes import (RAILING_HEIGHT_FT, below_label_regions, pool_label_regions,
                                                  space_attributes)
+#: A region class from the region stage is applied at or above this confidence.
+REGION_CONFIDENCE_FLOOR = 0.70
 from archiagent.geometry.room_gaps import MAX_GAP_FT, find_room_gaps
 from archiagent.geometry.spaces import (detect_spaces, space_boundary_graph,
                                         room_graph_with_openings)
@@ -29,7 +32,7 @@ from archiagent.validate import validate
 def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
               measurements=(), review=None, adjudicator=None, symbol_library=(),
               declared_thickness_ft=(), thickness_tolerance_ft=None,
-              thickness_exhaustive=False, room_gap_ft=MAX_GAP_FT):
+              thickness_exhaustive=False, room_gap_ft=MAX_GAP_FT, region_stage=None):
     import math
     from archiagent.classify.layers import candidate_layers
     from archiagent.geometry.candidacy import (MODE_TOLERANCE_FT, reconcile_symbols, select_walls,
@@ -165,23 +168,43 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
     spaces = detect_spaces(room_graph, clear_boundary=True, voids=voids)
     # What the room labels say: a "... BELOW" room is a void on this floor; levels and clear heights are stated.
     labels = space_attributes(spaces, ps.texts, scale.units_per_foot)
-    label_voids = tuple(s.boundary for s, a in zip(spaces, labels) if a is not None and a.below)
+    spaces = tuple(replace(s, label=a.label) if a is not None else s for s, a in zip(spaces, labels))
+    # What each region is. The drawing's own words first (a room marked BELOW is a void,
+    # a POOL is a pool); the region stage, when one runs, classes the rest.
+    region_classes = {i: ("void" if a.below else "pool") for i, a in enumerate(labels)
+                      if a is not None and (a.below or a.pool)}
+    region_issues = ()
+    if region_stage is not None and spaces:
+        judged, region_issues = region_stage(ps, spaces, scale.units_per_foot)
+        for i, (cls, conf) in judged.items():
+            if i not in region_classes and conf >= REGION_CONFIDENCE_FLOOR:
+                region_classes[i] = cls
     # A void is often not a closed room: find it from the size its label states and the lines around it.
     from shapely.geometry import Polygon as _Polygon
-    found = tuple(r for r in below_label_regions(ps, scale.units_per_foot)
-                  if not any(_Polygon(r).intersection(_Polygon(v)).area > 0.5 * _Polygon(r).area
-                             for v in label_voids))
-    label_voids = label_voids + found
+    regions = list(spaces)
+    for kind, rings in (("void", below_label_regions(ps, scale.units_per_foot)),
+                        ("pool", pool_label_regions(ps, scale.units_per_foot))):
+        for r in rings:
+            if not any(_Polygon(r).intersection(_Polygon(regions[i].boundary)).area > 0.5 * _Polygon(r).area
+                       for i, c in region_classes.items() if c == kind):
+                region_classes[len(regions)] = kind
+                regions.append(Space(tuple(r), _Polygon(r).area))
+    effects = apply_regions(graph.walls, regions, region_classes)
+    label_voids = effects.voids
+    railings = effects.railings
     if label_voids:
         voids = voids + label_voids
-        spaces = detect_spaces(room_graph, clear_boundary=True, voids=voids)
-        labels = space_attributes(spaces, ps.texts, scale.units_per_foot)
+        new_spaces = detect_spaces(room_graph, clear_boundary=True, voids=voids)
+        carried = carry_classes(regions, region_classes, new_spaces)
+        labels = space_attributes(new_spaces, ps.texts, scale.units_per_foot)
+        spaces = tuple(replace(s, region_class=c) for s, c in zip(new_spaces, carried))
+    else:
+        spaces = tuple(replace(s, region_class=region_classes.get(i, "")) for i, s in enumerate(spaces))
     spaces = tuple(replace(s, label=a.label, level_offset_ft=a.level_offset_ft,
                            clear_height_ft=a.clear_height_ft, double_height=a.double_height)
                    if a is not None else s for s, a in zip(spaces, labels))
-    railings = railing_wall_indices(graph.walls, voids) if label_voids else set()
-    final_walls = tuple(replace(w, height_ft=RAILING_HEIGHT_FT, wall_class="railing") if i in railings else w
-                        for i, w in enumerate(graph.walls))
+    final_walls = tuple(replace(w, height_ft=RAILING_HEIGHT_FT) if w.wall_class == "railing" else w
+                        for w in effects.walls)
     footprints = detect_footprints(boundary_graph, voids=voids)
     footprint_verified = False
     if "footprints" in review:
@@ -265,9 +288,10 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
                                "gap had no symbol; each was made explicit and hosted"),)
     if label_voids:
         label_issues = (Issue("info", "spaces", "voids_from_labels",
-                              f"{len(label_voids)} room(s) labelled as below or open to the sky are voids on this "
-                              f"floor: no slab; {len(railings)} thin wall(s) on their edge are "
-                              f"{RAILING_HEIGHT_FT:g} ft railings"),)
+                              f"{len(label_voids)} void or pool region(s) have no slab on this floor; "
+                              f"{railings} thin wall(s) on a void's edge are {RAILING_HEIGHT_FT:g} ft railings; "
+                              f"{effects.pool_edges} wall(s) on a pool's edge go down below the floor"),)
+    label_issues += tuple(region_issues)
     fit_issues = ()
     if profile_fit.trimmed:
         fit_issues = (Issue("info", "walls", "walls_fitted_to_profiles",
@@ -307,14 +331,14 @@ def extract_from_dxf(ps: PrimitiveSet, classifier: LayerClassifier, *,
                      symbol_library=(), declared_thickness_ft=(),
                      thickness_tolerance_ft=None,
                      thickness_exhaustive=False,
-                     room_gap_ft=MAX_GAP_FT) -> BuildingModel:
+                     room_gap_ft=MAX_GAP_FT, region_stage=None) -> BuildingModel:
     scale = ScaleResult(units_per_foot,"source-units-unverified",(),0.0,0)
     return _assemble(ps,classifier.classify(build_inventory(ps)),scale,wall_height_ft,
                      region=region,measurements=measurements,review=review,adjudicator=adjudicator,
                      symbol_library=symbol_library,declared_thickness_ft=declared_thickness_ft,
                      thickness_tolerance_ft=thickness_tolerance_ft,
                      thickness_exhaustive=thickness_exhaustive,
-                     room_gap_ft=room_gap_ft)
+                     room_gap_ft=room_gap_ft, region_stage=region_stage)
 
 
 def extract(pdf_path: str | Path, classifier: LayerClassifier, page: int = 0,

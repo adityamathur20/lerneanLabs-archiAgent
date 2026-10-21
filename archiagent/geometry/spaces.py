@@ -29,6 +29,7 @@ class Space:
     level_offset_ft: float | None = None
     clear_height_ft: float | None = None
     double_height: bool = False
+    region_class: str = ""         # classify/region_stage.py: room, balcony, void, pool ...
 
 
 def _ring(coords):

@@ -392,6 +392,16 @@ def _with_thickness_evidence(args, ps, stats, units_per_foot):
                                      args.wall_thickness_tolerance_in / 12)
 
 
+def _region_stage(args):
+    """What each closed space is (room, void, pool ...), whenever the element stage runs."""
+    if (args.no_wall_adjudication or args.no_element_stage or args.rules or args.walls
+            or not _vision_enabled(args.no_vision)):
+        return None
+    from archiagent.classify.region_stage import RegionStage
+    cfg = config_from_env(provider=args.provider, model=args.model, timeout=args.timeout)
+    return RegionStage(build_client(cfg), max_images=args.element_stage_max_images, max_tokens=_max_tokens(args))
+
+
 def _wall_adjudicator(args):
     """Vision review of uncertain wall candidates, or None when images must not be sent."""
     if (args.no_wall_adjudication or args.rules or args.walls
@@ -1074,13 +1084,14 @@ def _main(argv: list[str] | None = None) -> int:
     # no side-channel for issues raised during classification.
     classifier_issues: list[Issue] = []
     classifier: LayerClassifier | None = None
-    adjudicator = None
+    adjudicator = region_stage = None
     if not (args.inspect or args.list_regions or args.prepare or floors_mode):
         try:
             classifier = (_dxf_classifier(args, input_path,
                                           on_issue=classifier_issues.append)
                          if is_dxf else _classifier(args))
             adjudicator = _wall_adjudicator(args) if is_dxf else None
+            region_stage = _region_stage(args) if is_dxf else None
         except LLMUnavailable as e:
             print(f"error: {e}", file=sys.stderr)
             return EXIT_LLM
@@ -1272,7 +1283,7 @@ def _main(argv: list[str] | None = None) -> int:
                                          thickness_tolerance_ft=(args.wall_thickness_tolerance_in / 12
                                                                  if args.wall_thickness else None),
                                          thickness_exhaustive=args.wall_thickness_exhaustive,
-                                         room_gap_ft=args.room_gap_ft,**kwargs)
+                                         room_gap_ft=args.room_gap_ft,region_stage=region_stage,**kwargs)
             else:
                 model = extract_from_primitives(source,selected_classifier,units_per_foot=selected_scale,stats=region_stats,**kwargs)
             if region is None:
