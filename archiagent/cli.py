@@ -191,6 +191,9 @@ def _parser() -> argparse.ArgumentParser:
                    help="at most N tile images per floor for the element stage (default 8)")
     # Internal: the owner's element feedback for this drawing, applied before the element stage.
     p.add_argument("--feedback-file", nargs="+", metavar="FEEDBACK_JSON", help=argparse.SUPPRESS)
+    # Internal: candidacy bands fitted from owner feedback (--calibrate writes the file).
+    p.add_argument("--calibrate", nargs="+", metavar="FEEDBACK_JSON", help=argparse.SUPPRESS)
+    p.add_argument("--calibration-file", metavar="CALIBRATION_JSON", help=argparse.SUPPRESS)
     p.add_argument("--feedback-template", metavar="INTERPRETATION_JSON",
                    help="write <outputDir>/<stem>.feedback.json from a run's interpretation manifest: every "
                         "element it created with a blank verdict, for a person to fill in; needs no drawing")
@@ -392,6 +395,14 @@ def _with_thickness_evidence(args, ps, stats, units_per_foot):
     from archiagent.classify.thickness_evidence import attach_thickness_evidence
     return attach_thickness_evidence(stats, ps, units_per_foot, declared,
                                      args.wall_thickness_tolerance_in / 12)
+
+
+def _calibrated_bands(args):
+    """(reject_ceiling, accept_floor) from --calibration-file, or None for the defaults."""
+    if not args.calibration_file:
+        return None
+    data = json.loads(Path(args.calibration_file).read_text())
+    return (float(data["reject_ceiling"]), float(data["accept_floor"]))
 
 
 def _feedback_decisions(args, source):
@@ -996,6 +1007,24 @@ def _main(argv: list[str] | None = None) -> int:
             print(f"error: replay cannot reinterpret frozen decisions with {', '.join(conflicts)}", file=sys.stderr)
             return EXIT_USAGE
 
+    if args.calibrate:
+        from archiagent.calibrate import fit_bands, labelled_from_feedback
+        try:
+            if not args.outputDir:
+                raise ValueError("--calibrate needs --outputDir")
+            labelled, drawings = labelled_from_feedback(args.calibrate)
+            reject_ceiling, accept_floor = fit_bands(labelled, drawings)
+            out = Path(args.outputDir) / "calibration.json"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps({"accept_floor": accept_floor, "reject_ceiling": reject_ceiling,
+                                       "labelled": len(labelled), "drawings": drawings}, indent=2))
+            print(f"calibration -> {out}: reject <= {reject_ceiling}, accept >= {accept_floor} "
+                  f"({len(labelled)} walls, {drawings} drawings)")
+            return EXIT_OK
+        except (ValueError, OSError, KeyError, json.JSONDecodeError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+
     if args.feedback_template or args.feedback_summary:
         from archiagent import feedback
         try:
@@ -1309,7 +1338,8 @@ def _main(argv: list[str] | None = None) -> int:
                                          thickness_exhaustive=args.wall_thickness_exhaustive,
                                          room_gap_ft=args.room_gap_ft,region_stage=region_stage,
                                          gap_stage=gap_stage,
-                                         feedback=_feedback_decisions(args, source),**kwargs)
+                                         feedback=_feedback_decisions(args, source),
+                                         bands=_calibrated_bands(args),**kwargs)
             else:
                 model = extract_from_primitives(source,selected_classifier,units_per_foot=selected_scale,stats=region_stats,**kwargs)
             if region is None:

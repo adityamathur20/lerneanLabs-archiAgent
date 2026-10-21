@@ -102,7 +102,7 @@ def write_template(manifest_path, out_path) -> dict:
                    "wrong, give a reason from reasons[kind]. Add anything the model did not build to missing, "
                    "with the nearest label in note. Leave verdict null to skip."),
         "verdicts": list(VERDICTS), "reasons": REASONS, "missing_kinds": list(KINDS),
-        "source": {"manifest": str(manifest_path), "source_sha256": doc.get("source_sha256", "")
+        "source": {"manifest": str(Path(manifest_path).resolve()), "source_sha256": doc.get("source_sha256", "")
                    if isinstance(doc, dict) else "", "versions": doc.get("versions", {}) if isinstance(doc, dict) else {}},
         "models": [{"region_id": m.get("region_id", ""), "storey": m.get("storey_name", ""),
                     "units_per_foot": (m.get("scale") or {}).get("units_per_foot"),
@@ -269,14 +269,25 @@ def _wall_class_from(reason: str, note: str) -> str:
     return ""
 
 
+def resolve_manifest(feedback_path, manifest: str) -> Path | None:
+    """The manifest a feedback file names, even when it was written relative to another folder."""
+    if not manifest:
+        return None
+    feedback_path = Path(feedback_path).resolve()
+    stripped = Path(*[part for part in Path(manifest).parts if part not in ("..", ".")])
+    for candidate in (Path(manifest), *(a / manifest for a in feedback_path.parents),
+                      *(a / stripped for a in feedback_path.parents)):
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
 def _sha_of(doc: dict, path: Path) -> set[str]:
     shas = {doc.get("source", {}).get("source_sha256") or ""}
-    manifest = doc.get("source", {}).get("manifest") or ""
-    for candidate in (Path(manifest), path.parent / manifest):
-        if manifest and candidate.is_file():
-            m = json.loads(candidate.read_text())
-            shas |= {x.get("source_sha256", "") for x in m.get("models", [])}
-            break
+    found = resolve_manifest(path, doc.get("source", {}).get("manifest") or "")
+    if found is not None:
+        m = json.loads(found.read_text())
+        shas |= {x.get("source_sha256", "") for x in m.get("models", [])}
     return shas - {""}
 
 

@@ -50,13 +50,16 @@ class Context:
     declared_thickness_ft: tuple[float, ...] = ()
     thickness_tolerance_ft: float = MODE_TOLERANCE_FT
     thickness_exhaustive: bool = False
+    # Fitted from owner feedback (archiagent/calibrate.py); None keeps the defaults.
+    bands: tuple[float, float] | None = None
 
 
 def build_context(ps: PrimitiveSet, classification: Classification,
                   units_per_foot: float, *,
                   declared_thickness_ft: tuple[float, ...] = (),
                   thickness_tolerance_ft: float = MODE_TOLERANCE_FT,
-                  thickness_exhaustive: bool = False) -> Context:
+                  thickness_exhaustive: bool = False,
+                  bands: tuple[float, float] | None = None) -> Context:
     roles = {d.layer.casefold(): (d.role, d.confidence) for d in classification}
     outlines: dict[str, list[Polygon]] = {}
     glyphs: list[Point] = []
@@ -79,7 +82,7 @@ def build_context(ps: PrimitiveSet, classification: Classification,
                    {child: tuple(children[parent]) for child, parent in parents.items()},
                    parents, block_of, Counter(block_of.values()),
                    STRtree(glyphs) if glyphs else None, tuple(glyphs),
-                   declared_thickness_ft, thickness_tolerance_ft, thickness_exhaustive)
+                   declared_thickness_ft, thickness_tolerance_ft, thickness_exhaustive, bands)
 
 
 def _layer_role(wall: WallSeg, ctx: Context) -> float:
@@ -169,10 +172,10 @@ def combine(signals: tuple[tuple[str, float], ...]) -> float:
     return round((weighted + 1) / 2, 6)
 
 
-def band(score: float) -> str:
-    if score >= ACCEPT_FLOOR:
+def band(score: float, accept_floor: float = ACCEPT_FLOOR, reject_ceiling: float = REJECT_CEILING) -> str:
+    if score >= accept_floor:
         return "accept"
-    if score <= REJECT_CEILING:
+    if score <= reject_ceiling:
         return "reject"
     return "ambiguous"
 
@@ -301,7 +304,8 @@ def score_candidates(walls, ctx: Context) -> tuple[ScoredCandidate, ...]:
         vetoed = (ctx.thickness_exhaustive and ctx.declared_thickness_ft
                   and _thickness(w, modes, ctx.thickness_tolerance_ft) < 0)
         out.append(ScoredCandidate(candidate_id(w), w, signals, score,
-                                   "reject" if vetoed else band(score)))
+                                   "reject" if vetoed else
+                                   band(score, *((ctx.bands[1], ctx.bands[0]) if ctx.bands else ()))))
     return tuple(out)
 
 
@@ -384,7 +388,8 @@ def select_walls(ps: PrimitiveSet, proposed, classification: Classification, uni
                  *, adjudicator: Adjudicator | None = None,
                  declared_thickness_ft: tuple[float, ...] = (),
                  thickness_tolerance_ft: float = MODE_TOLERANCE_FT,
-                 thickness_exhaustive: bool = False
+                 thickness_exhaustive: bool = False,
+                 bands: tuple[float, float] | None = None
                  ) -> tuple[tuple[WallSeg, ...], tuple[CandidateDecision, ...], tuple[Issue, ...]]:
     """Accepted walls (in proposed order), a decision for every run, and issues."""
     proposed = tuple(proposed)
@@ -398,7 +403,8 @@ def select_walls(ps: PrimitiveSet, proposed, classification: Classification, uni
                               build_context(ps, classification, units_per_foot,
                                             declared_thickness_ft=declared_thickness_ft,
                                             thickness_tolerance_ft=thickness_tolerance_ft,
-                                            thickness_exhaustive=thickness_exhaustive))
+                                            thickness_exhaustive=thickness_exhaustive,
+                                            bands=bands))
     verdicts, issues = {}, []
     ambiguous = tuple(c for c in scored if c.band == "ambiguous")
     # The element stage judges accepted walls too: they need a class (site wall, parapet ...).

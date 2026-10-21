@@ -34,7 +34,7 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
               measurements=(), review=None, adjudicator=None, symbol_library=(),
               declared_thickness_ft=(), thickness_tolerance_ft=None,
               thickness_exhaustive=False, room_gap_ft=MAX_GAP_FT, region_stage=None, gap_stage=None,
-              feedback=None):
+              feedback=None, bands=None):
     import math
     from archiagent.classify.layers import candidate_layers
     from archiagent.geometry.candidacy import (MODE_TOLERANCE_FT, reconcile_symbols, select_walls,
@@ -131,7 +131,7 @@ def _assemble(ps, classification, scale, wall_height_ft, *, region=None,
         scale.units_per_foot, adjudicator=adjudicator,
         declared_thickness_ft=declared_thickness_ft,
         thickness_tolerance_ft=tolerance_ft,
-        thickness_exhaustive=thickness_exhaustive)
+        thickness_exhaustive=thickness_exhaustive, bands=bands)
     feedback_issues = ()
     if feedback is not None:
         from archiagent.feedback import apply_feedback
@@ -348,7 +348,7 @@ def extract_from_dxf(ps: PrimitiveSet, classifier: LayerClassifier, *,
                      thickness_tolerance_ft=None,
                      thickness_exhaustive=False,
                      room_gap_ft=MAX_GAP_FT, region_stage=None, gap_stage=None,
-                     feedback=None) -> BuildingModel:
+                     feedback=None, bands=None) -> BuildingModel:
     scale = ScaleResult(units_per_foot,"source-units-unverified",(),0.0,0)
     return _assemble(ps,classifier.classify(build_inventory(ps)),scale,wall_height_ft,
                      region=region,measurements=measurements,review=review,adjudicator=adjudicator,
@@ -356,7 +356,7 @@ def extract_from_dxf(ps: PrimitiveSet, classifier: LayerClassifier, *,
                      thickness_tolerance_ft=thickness_tolerance_ft,
                      thickness_exhaustive=thickness_exhaustive,
                      room_gap_ft=room_gap_ft, region_stage=region_stage, gap_stage=gap_stage,
-                     feedback=feedback)
+                     feedback=feedback, bands=bands)
 
 
 def extract(pdf_path: str | Path, classifier: LayerClassifier, page: int = 0,
