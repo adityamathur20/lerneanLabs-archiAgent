@@ -23,7 +23,7 @@ class Item:
     id: str
     kind: str                 # "wall" | "region" | "gap"
     coords: tuple[Pt, ...]    # feet
-    settled: bool             # drawn for context, not asked about
+    settled: bool             # already decided; asked only what it is (drawn pale)
 
 
 def number_items(items) -> tuple[Item, ...]:
@@ -73,7 +73,7 @@ def assign(items, tile_boxes) -> dict[int, tuple[Item, ...]]:
 
 
 def render(ps, units_per_foot: float, box, items, size_px: int = 1400) -> bytes:
-    """PNG of one tile: the drawing in grey, settled items pale, asked items coloured and numbered."""
+    """PNG of one tile: the drawing in grey, every item numbered; settled items pale, uncertain ones coloured."""
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -98,10 +98,8 @@ def render(ps, units_per_foot: float, box, items, size_px: int = 1400) -> bytes:
             ax.plot(px, py, color="#9a9a9a", linewidth=0.5)
         for item in items:
             px, py = zip(*item.coords)
-            if item.settled:
-                ax.plot(px, py, color=SETTLED, linewidth=2, alpha=0.6)
-                continue
-            colour = COLOURS.get(item.kind, "#d62728")
+            # Settled items are asked only what they are, so they carry a number too, in pale blue.
+            colour = SETTLED if item.settled else COLOURS.get(item.kind, "#d62728")
             ax.plot(px, py, color=colour, linewidth=3.5, alpha=0.7, solid_capstyle="butt")
             mx, my = _mid(item.coords)
             ax.text(mx, my, str(item.number), color="white", fontsize=9, ha="center", va="center",
