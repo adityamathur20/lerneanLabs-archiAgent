@@ -136,19 +136,27 @@ class WallElementStage:
         groups = assign(items, boxes)
         verdicts: dict[str, tuple[str, float, str]] = {}
         issues: list[Issue] = []
-        with ThreadPoolExecutor(max_workers=min(MAX_PARALLEL, len(groups))) as pool:
-            futures = {pool.submit(self._tile, ps, units_per_foot, boxes[k], group, asked): (k, group)
-                       for k, group in groups.items()}
-            for future in as_completed(futures):
-                k, group = futures[future]
-                try:
-                    for cid, (verdict, conf, reason, cls) in future.result().items():
-                        verdicts[cid] = (verdict, conf, reason)
-                        self.classes[cid] = (cls, conf)
-                except Exception as exc:  # noqa: BLE001 - one tile, not the run
-                    issues.append(Issue("warn", "element-stage", "element_stage_skipped",
-                                        f"tile {k + 1}: {len(group)} wall(s) kept their deterministic "
-                                        f"decision: {exc}"))
+        def take(k, group, result):
+            try:
+                for cid, (verdict, conf, reason, cls) in result().items():
+                    verdicts[cid] = (verdict, conf, reason)
+                    self.classes[cid] = (cls, conf)
+            except Exception as exc:  # noqa: BLE001 - one tile, not the run
+                issues.append(Issue("warn", "element-stage", "element_stage_skipped",
+                                    f"tile {k + 1}: {len(group)} wall(s) kept their deterministic "
+                                    f"decision: {exc}"))
+
+        # The first tile runs alone: it writes the instructions to the provider's
+        # cache, and the tiles after it read them there instead of paying again.
+        (k0, g0), *rest = groups.items()
+        take(k0, g0, lambda: self._tile(ps, units_per_foot, boxes[k0], g0, asked))
+        if rest:
+            with ThreadPoolExecutor(max_workers=min(MAX_PARALLEL, len(rest))) as pool:
+                futures = {pool.submit(self._tile, ps, units_per_foot, boxes[k], group, asked): (k, group)
+                           for k, group in rest}
+                for future in as_completed(futures):
+                    k, group = futures[future]
+                    take(k, group, future.result)
         return verdicts, tuple(sorted(issues, key=lambda i: i.msg))
 
     def _tile(self, ps, units_per_foot, box, group, candidates):

@@ -32,7 +32,8 @@ _NO_SDK = (
 class AnthropicClient:
     def __init__(self, model: str = DEFAULT_MODEL, api_key: str | None = None,
                  base_url: str | None = None,
-                 timeout: float | None = None) -> None:
+                 timeout: float | None = None,
+                 effort: str | None = None) -> None:
         try:
             import anthropic
         except ImportError as e:  # pragma: no cover - environment-dependent
@@ -44,6 +45,7 @@ class AnthropicClient:
 
         self._sdk = anthropic
         self._model = model
+        self._effort = effort
         kwargs = {"api_key": key}
         if base_url:
             kwargs["base_url"] = base_url
@@ -83,14 +85,21 @@ class AnthropicClient:
 
     def _request(self, *, messages: list[dict], system: str, schema: dict,
                 max_tokens: int, vision: bool = False) -> dict:
+        output_config: dict = {"format": {"type": "json_schema",
+                                          "schema": schema}}
+        if self._effort:
+            output_config["effort"] = self._effort
         try:
             resp = self._client.messages.create(
                 model=self._model,
                 max_tokens=max_tokens,
-                system=system,
+                # Marked cacheable: a floor's tiles all send the same
+                # instructions, and a cache read costs a tenth of fresh input.
+                # A prompt below the provider's minimum is simply not cached.
+                system=[{"type": "text", "text": system,
+                         "cache_control": {"type": "ephemeral"}}],
                 messages=messages,
-                output_config={"format": {"type": "json_schema",
-                                          "schema": schema}},
+                output_config=output_config,
             )
         except self._sdk.APIError as e:
             raise LLMUnavailable(f"Anthropic API call failed: {e}") from e
@@ -144,5 +153,6 @@ def _record_usage(resp, *, provider: str, model: str, vision: bool) -> None:
         # Anthropic bills a cache read at a different rate from fresh input, so
         # the two are never folded together.
         cached_input_tokens=getattr(u, "cache_read_input_tokens", 0) or 0,
+        cache_write_input_tokens=getattr(u, "cache_creation_input_tokens", 0) or 0,
         vision=vision,
     )

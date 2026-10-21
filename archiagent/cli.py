@@ -963,6 +963,7 @@ def _dump_usage_report(argv: list[str] | None, exit_code: int) -> None:
         totals = report["totals"]
         print(f"tokens: {totals['calls']} call(s), in={totals['input_tokens']} "
               f"out={totals['output_tokens']} cached_in={totals['cached_input_tokens']} "
+              f"cache_write={totals['cache_write_input_tokens']} "
               f"-> {destination.name}", file=sys.stderr)
     except Exception as error:
         print(f"warning: could not write the token report ({error})", file=sys.stderr)

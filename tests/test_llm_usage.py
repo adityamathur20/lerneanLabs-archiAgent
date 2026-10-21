@@ -180,3 +180,75 @@ def test_a_response_without_usage_does_not_break_the_run(monkeypatch):
     assert usage_mod.current().totals()["calls"] == 1
     assert usage_mod.current().totals()["input_tokens"] == 0
     usage_mod.reset()
+
+
+# --- prompt caching ------------------------------------------------------------
+
+def test_cache_writes_are_recorded_apart_from_fresh_input_and_reads():
+    """A cache write is billed above fresh input (1.25x), so it is a third count."""
+    ledger = UsageLedger()
+    ledger.record(provider="anthropic", model="m", input_tokens=100, output_tokens=5,
+                  cached_input_tokens=0, cache_write_input_tokens=1080, purpose="walls")
+    totals = ledger.totals()
+    assert totals["cache_write_input_tokens"] == 1080
+    assert totals["input_tokens"] == 100
+    assert ledger.report()["calls"][0]["cache_write_input_tokens"] == 1080
+
+
+def _capture(monkeypatch, client, usage):
+    sent = {}
+
+    def fake_create(**kwargs):
+        sent.update(kwargs)
+        return _FakeAnthropicResponse(usage)
+
+    monkeypatch.setattr(client._client.messages, "create", fake_create)
+    return sent
+
+
+def test_the_system_prompt_is_sent_as_a_cacheable_block(monkeypatch):
+    """Every tile of a floor repeats the same instructions; marking them lets the
+    second and later calls read them from the cache at a tenth of the price."""
+    from archiagent.llm.anthropic_client import AnthropicClient
+
+    client = AnthropicClient(model="m", api_key="test-key")
+    sent = _capture(monkeypatch, client, _FakeUsage(10, 1))
+    client.classify_json_vision(system="the rules", user="u", schema={}, images=[("t", b"png")])
+    assert sent["system"] == [{"type": "text", "text": "the rules",
+                               "cache_control": {"type": "ephemeral"}}]
+    usage_mod.reset()
+
+
+def test_the_anthropic_client_records_cache_writes(monkeypatch):
+    from archiagent.llm.anthropic_client import AnthropicClient
+
+    usage_mod.reset()
+    client = AnthropicClient(model="m", api_key="test-key")
+    u = _FakeUsage(59, 20)
+    u.cache_creation_input_tokens = 1080
+    _capture(monkeypatch, client, u)
+    client.classify_json(system="s", user="u", schema={})
+    assert usage_mod.current().totals()["cache_write_input_tokens"] == 1080
+    usage_mod.reset()
+
+
+def test_effort_is_sent_only_when_configured(monkeypatch):
+    from archiagent.llm.anthropic_client import AnthropicClient
+
+    plain = AnthropicClient(model="m", api_key="test-key")
+    sent = _capture(monkeypatch, plain, _FakeUsage(1, 1))
+    plain.classify_json(system="s", user="u", schema={})
+    assert "effort" not in sent["output_config"]
+
+    medium = AnthropicClient(model="m", api_key="test-key", effort="medium")
+    sent = _capture(monkeypatch, medium, _FakeUsage(1, 1))
+    medium.classify_json(system="s", user="u", schema={})
+    assert sent["output_config"]["effort"] == "medium"
+    usage_mod.reset()
+
+
+def test_effort_is_read_from_the_environment():
+    from archiagent.llm.config import config_from_env
+
+    assert config_from_env({"ARCHIAGENT_LLM_EFFORT": "medium"}).effort == "medium"
+    assert config_from_env({}).effort is None

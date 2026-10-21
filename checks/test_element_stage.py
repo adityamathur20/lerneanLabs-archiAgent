@@ -179,3 +179,26 @@ def test_the_tile_marks_only_strong_accepts_as_settled():
     assert is_settled(_r(cand("a", 0, "accept"), score=0.9))
     assert not is_settled(_r(cand("a", 0, "accept"), score=0.68))
     assert not is_settled(_r(cand("a", 0, "ambiguous"), score=0.9))
+
+
+def test_the_first_tile_runs_alone_so_the_others_can_read_its_cached_prompt():
+    """Tiles run in parallel, and parallel calls cannot read a cache none of them
+    has written yet: one tile goes first, then the rest together."""
+    import threading
+    import time
+
+    started, lock = [], threading.Lock()
+    first_done = threading.Event()
+
+    class Recorder:
+        def classify_json_vision(self, *, user, **_):
+            with lock:
+                started.append(first_done.is_set())
+            time.sleep(0.05)              # a real call takes seconds; siblings start meanwhile
+            first_done.set()
+            return {"items": []}
+
+    many = [cand(f"x{i:02d}", (i % 10) * 50.0, "ambiguous", y=(i // 10) * 50.0) for i in range(100)]
+    WallElementStage(Recorder(), render=lambda *a, **k: b"png")(PS, tuple(many), 12.0)
+    assert len(started) > 1
+    assert started[0] is False and all(started[1:]), started
