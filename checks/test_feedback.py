@@ -144,3 +144,16 @@ def test_an_empty_hash_is_resolved_through_the_manifest_the_file_names(tmp_path)
     m["models"][0]["source_sha256"] = "z" * 64
     (tmp_path / "plan.interpretation.json").write_text(json.dumps(m))
     assert decisions_for([path], "z" * 64).reject_source_ids == frozenset({"a"})
+
+
+def test_profile_walls_are_listed_and_drawn_too(tmp_path):
+    m = json.loads(manifest(tmp_path).read_text())
+    m["models"][0]["wall_profiles"] = [{"id": "p1", "boundary": [[0, 0], [3, 0], [3, 1], [0, 1], [0, 0]], "holes": [],
+                                        "source_layer": "HATCH", "source_ids": ["h1"]}]
+    path = tmp_path / "with-profile.interpretation.json"
+    path.write_text(json.dumps(m))
+    t = feedback.write_template(path, tmp_path / "p.feedback.json")
+    wp = [e for e in t["models"][0]["elements"] if e["kind"] == "profile_wall"]
+    assert [e["label"] for e in wp] == ["WP1"]
+    feedback.write_sheet(path, tmp_path / "p.svg")
+    assert ">WP1<" in (tmp_path / "p.svg").read_text()

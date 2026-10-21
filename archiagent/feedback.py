@@ -18,7 +18,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 VERDICTS = ("correct", "wrong", "unsure")
-KINDS = ("wall", "door", "window", "opening", "space", "column", "stair", "beam", "void", "railing")
+KINDS = ("wall", "profile_wall", "door", "window", "opening", "space", "column", "stair", "beam", "void", "railing")
 REASONS = {
     "wall": ["not a wall", "wrong position", "wrong thickness", "wrong height", "should be railing",
              "site or boundary wall", "duplicate", "other"],
@@ -27,6 +27,7 @@ REASONS = {
     "opening": ["not an opening", "wrong position", "wrong width", "other"],
     "space": ["not a room", "merged rooms", "wrong label", "should be void", "other"],
     "column": ["not a column", "wrong size", "other"],
+    "profile_wall": ["not a wall", "wrong shape", "wrong height", "should be railing", "other"],
     "stair": ["not a stair", "other"],
     "beam": ["not a beam", "other"],
 }
@@ -42,7 +43,7 @@ def _centroid(ring):
     return [round(sum(xs) / len(xs), 2), round(sum(ys) / len(ys), 2)]
 
 
-PREFIX = {"wall": "W", "door": "D", "window": "WN", "opening": "O", "space": "R",
+PREFIX = {"wall": "W", "profile_wall": "WP", "door": "D", "window": "WN", "opening": "O", "space": "R",
           "column": "C", "stair": "ST", "beam": "B"}
 
 
@@ -60,6 +61,12 @@ def _labelled(model: dict) -> list[tuple[dict, dict]]:
                        "height_ft": w.get("height_ft") or model.get("wall_height_ft"),
                        "detector": w["detector"], "source_ids": list(w.get("source_ids", []))},
                       {"wall": (w["start"], w["end"], w["thickness_ft"]), "low": bool(w.get("height_ft"))}))
+    for pr in model.get("wall_profiles", []):
+        ring = pr.get("boundary") or []
+        if len(ring) >= 3:
+            pairs.append(({"id": f"profile:{pr['id']}", "kind": "profile_wall", "at_ft": _centroid(ring),
+                           "layer": pr.get("source_layer", ""), "source_ids": list(pr.get("source_ids", []))},
+                          {"profile": ring}))
     hosted = set()
     for o in model.get("openings", []):
         hosted.add(o.get("symbol_id", ""))
@@ -193,6 +200,8 @@ def write_sheet(manifest_path, out_path) -> Path:
         for e, g in pairs:
             if "ring" in g and g["ring"] and e["kind"] == "space":
                 parts.append(f'<polygon points="{_pts(g["ring"], tx)}" class="space"/>')
+            if "profile" in g:
+                parts.append(f'<polygon points="{_pts(g["profile"], tx)}" fill="{_COLOURS["wall"]}" opacity="0.6"/>')
         for e, g in pairs:
             if "wall" in g:
                 a, b, t = g["wall"]
@@ -217,7 +226,7 @@ def write_sheet(manifest_path, out_path) -> Path:
     style = ("<style>.bg{fill:none;stroke:#bbb;stroke-width:0.05}.space{fill:#fce8b2;opacity:.45}"
              ".op{fill:none;stroke-width:0.5}text{font:0.9px sans-serif;text-anchor:middle;dominant-baseline:middle;"
              "paint-order:stroke;stroke:#fff;stroke-width:0.25}.title{font-size:2px;text-anchor:start}</style>")
-    legend = ("<!-- W wall (orange = lowered, e.g. railing), D door, WN window, O opening, R room, "
+    legend = ("<!-- W wall (orange = lowered, e.g. railing), WP solid wall outline, D door, WN window, O opening, R room, "
               "C column, ST stair, B beam -->")
     svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2 -4 {x_offset + 2:.1f} {height + 6:.1f}" '
            f'style="background:#fff">{legend}{style}{"".join(parts)}{"".join(labels)}</svg>')
@@ -227,6 +236,8 @@ def write_sheet(manifest_path, out_path) -> Path:
 
 
 def _points(g):
+    if "profile" in g:
+        return list(g["profile"])
     if "wall" in g:
         return [g["wall"][0], g["wall"][1]]
     if "line" in g:
