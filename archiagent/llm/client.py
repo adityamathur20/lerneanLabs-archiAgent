@@ -36,7 +36,7 @@ class VisionUnsupported(RuntimeError):
 
 class LLMClient(Protocol):
     def classify_json(self, *, system: str, user: str, schema: dict,
-                      max_tokens: int = 2048) -> dict:
+                      max_tokens: int = 8192) -> dict:
         """Return a JSON object conforming to `schema`.
 
         Raises LLMUnavailable on transport, auth or quota failure.
@@ -47,7 +47,7 @@ class LLMClient(Protocol):
 
     def classify_json_vision(self, *, system: str, user: str, schema: dict,
                              images: list[tuple[str, bytes]],
-                             max_tokens: int = 2048) -> dict:
+                             max_tokens: int = 8192) -> dict:
         """Like `classify_json`, but with images attached to the request.
 
         `images` is a list of (label, png_bytes) pairs; the caller controls

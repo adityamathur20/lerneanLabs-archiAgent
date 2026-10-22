@@ -19,7 +19,7 @@ from archiagent.classify.prompt import (SYSTEM_PROMPT, build_user_prompt,
 from archiagent.classify.roles import Role
 from archiagent.llm.client import LLMClient, LLMSchemaError
 
-MAX_TOKENS = 2048
+MAX_TOKENS = 8192
 
 UNANSWERED = "the classifier returned no entry for this layer"
 

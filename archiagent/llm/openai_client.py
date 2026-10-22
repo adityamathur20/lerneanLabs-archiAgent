@@ -57,7 +57,7 @@ class OpenAICompatClient:
         self._client = openai.OpenAI(**kwargs)
 
     def classify_json(self, *, system: str, user: str, schema: dict,
-                      max_tokens: int = 2048) -> dict:
+                      max_tokens: int = 8192) -> dict:
         return self._request(
             messages=[
                 {"role": "system", "content": system},
@@ -67,7 +67,7 @@ class OpenAICompatClient:
 
     def classify_json_vision(self, *, system: str, user: str, schema: dict,
                              images: list[tuple[str, bytes]],
-                             max_tokens: int = 2048) -> dict:
+                             max_tokens: int = 8192) -> dict:
         # A layer only means something relative to the drawing it belongs
         # to, so each image is labelled and the caller's ordering -- the
         # reference render first, then each escalated layer -- is preserved

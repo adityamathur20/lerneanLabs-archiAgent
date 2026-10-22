@@ -54,14 +54,14 @@ class AnthropicClient:
         self._client = anthropic.Anthropic(**kwargs)
 
     def classify_json(self, *, system: str, user: str, schema: dict,
-                      max_tokens: int = 2048) -> dict:
+                      max_tokens: int = 8192) -> dict:
         return self._request(
             messages=[{"role": "user", "content": user}],
             system=system, schema=schema, max_tokens=max_tokens)
 
     def classify_json_vision(self, *, system: str, user: str, schema: dict,
                              images: list[tuple[str, bytes]],
-                             max_tokens: int = 2048) -> dict:
+                             max_tokens: int = 8192) -> dict:
         # A layer only means something relative to the drawing it belongs
         # to, so each image is labelled and the caller's ordering -- the
         # reference render first, then each escalated layer -- is preserved
